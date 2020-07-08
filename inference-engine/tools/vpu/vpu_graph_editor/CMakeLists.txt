@@ -1,3 +1,4 @@
+#
 # Copyright (C) 2018-2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,13 +12,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
 
-if(ENABLE_MYRIAD)
-    add_subdirectory(vpu_perfcheck)
-    add_subdirectory(vpu_profile)
-    add_subdirectory(vpu_graph_editor)
-endif()
 
-if (ENABLE_MYRIAD)
-    add_subdirectory(vpu_compile)
-endif()
+
+function(add_graph_edit TARGET_NAME)
+    file(GLOB SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+
+    add_executable(${TARGET_NAME} ${SOURCES})
+
+
+   # target_include_directories(${TARGET_NAME}
+    #    #SYSTEM PRIVATE
+     #       "${IE_MAIN_SOURCE_DIR}/src/vpu/graph_editor)
+    
+
+    #set_target_properties(${TARGET_NAME} PROPERTIES COMPILE_PDB_NAME ${TARGET_NAME}
+     #                                           FOLDER tools)
+
+    #add_cpplint_target(${TARGET_NAME}_cpplint FOR_TARGETS ${TARGET_NAME})
+endfunction()
+
+add_graph_edit(vpu_graph_editor)
+
+
