@@ -21,10 +21,24 @@ function(add_graph_edit TARGET_NAME)
 
     add_executable(${TARGET_NAME} ${SOURCES})
 
+    target_link_libraries(${TARGET_NAME}
+        PRIVATE
+            inference_engine format_reader ngraph 
+            Threads::Threads
+        PUBLIC 
+            pugixml vpu_common_lib
+            ${NGRAPH_LIBRARIES} inference_engine_lp_transformations)
 
-   # target_include_directories(${TARGET_NAME}
-    #    #SYSTEM PRIVATE
-     #       "${IE_MAIN_SOURCE_DIR}/src/vpu/graph_editor)
+    target_include_directories(${TARGET_NAME}
+        SYSTEM PRIVATE
+            "${IE_MAIN_SOURCE_DIR}/src/legacy_api/include"
+            "${IE_MAIN_SOURCE_DIR}/src/plugin_api"
+            "${IE_MAIN_SOURCE_DIR}/src/inference_engine"
+            )
+
+
+   #add_dependencies(${TARGET_NAME}
+    #    ${PLUGIN_NAME} ${ARGN})
     
 
     #set_target_properties(${TARGET_NAME} PROPERTIES COMPILE_PDB_NAME ${TARGET_NAME}
