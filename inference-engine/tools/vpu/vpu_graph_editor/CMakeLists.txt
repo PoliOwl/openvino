@@ -37,14 +37,7 @@ function(add_graph_edit TARGET_NAME)
             )
 
 
-   #add_dependencies(${TARGET_NAME}
-    #    ${PLUGIN_NAME} ${ARGN})
-    
-
-    #set_target_properties(${TARGET_NAME} PROPERTIES COMPILE_PDB_NAME ${TARGET_NAME}
-     #                                           FOLDER tools)
-
-    #add_cpplint_target(${TARGET_NAME}_cpplint FOR_TARGETS ${TARGET_NAME})
+  
 endfunction()
 
 add_graph_edit(vpu_graph_editor)
