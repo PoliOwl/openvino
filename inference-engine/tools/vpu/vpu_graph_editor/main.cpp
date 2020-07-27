@@ -98,6 +98,9 @@ int main(int argc, char* argv[]) {
     ngraph::ParameterVector parameters;
     for (auto op : ops) {
         if(out.erase(op->get_friendly_name()) > 0) {
+            #if DEBUG == 3
+            std::cout<<"args "<<op->get_friendly_name()<<"\n";
+            #endif
             if(!(op->is_parameter())) {
                 ngraph::OutputVector args;
                 for(auto& element : op->input_values()) {
@@ -105,22 +108,37 @@ int main(int argc, char* argv[]) {
                     auto&& name = el->get_friendly_name();
                     auto subNode = nodes.find(name);
                     if(subNode != nodes.end()) {
-                        args.push_back(subNode->second->output(element.get_index()));
-                       // std::cout<<subNode->second->output(element.get_index())<<'\n'<<subNode->second<<'\n';
+                        #if DEBUG == 3
+                        std::cout<<"\t"<<subNode->second->get_friendly_name()<<"\t"<<subNode->second.get()<<"\n\n";
+                        #endif
+                        args.push_back(subNode->second);
                         continue;
                     }
                     auto&& existing_parameter = find(parameters, name);
                     if(existing_parameter.get() != nullptr) {
-                        //std::cout<<"Here: "<<name<<'\t'<<op->get_friendly_name()<<'\n';
-                        args.push_back(existing_parameter->output(element.get_index()));
+                        args.push_back(existing_parameter);
+                        #if DEBUG == 3
+                        std::cout<<"\t"<<existing_parameter->get_friendly_name()<<"\t"<<existing_parameter.get()<<"\n\n";
+                        #endif
+                        continue;
+                    }
+                    if(el->is_constant()) {
+                        const auto&& constanta= dynamic_cast<ngraph::opset3::Constant*>(el.get());
+                        const auto& subConstant = std::make_shared<ngraph::opset3::Constant>(*constanta);
+                        subConstant->set_friendly_name(el->get_friendly_name());
+                        nodes[el->get_friendly_name()] = subConstant;
+                        args.push_back(subConstant);
                         continue;
                     }
                     const auto& stubParameter = std::make_shared<ngraph::opset3::Parameter>(element.get_element_type(), element.get_partial_shape());
                     stubParameter->set_friendly_name(name);
                     parameters.push_back(stubParameter);
                     args.push_back(stubParameter);
+                    #if DEBUG == 3
+                        std::cout<<"\t"<<stubParameter->get_friendly_name()<<"\t"<<stubParameter.get()<<"\n\n";
+                    #endif
                 }
-                auto&& new_op = op->copy_with_new_inputs(args);
+                auto&& new_op = op->clone_with_new_inputs(args);
                 new_op->set_friendly_name(op->get_friendly_name());
                 nodes[op->get_friendly_name()] = new_op;
             }
@@ -135,7 +153,7 @@ int main(int argc, char* argv[]) {
                     auto&& el = sel.get_node();
                     if(out.find(el->get_friendly_name()) == out.end()) {
                         auto res = std::make_shared<ngraph::opset3::Result>(op);
-                        res->set_friendly_name(el->get_friendly_name());
+                        //res->set_friendly_name(el->get_friendly_name());
                         results.push_back(res);
 
                     }
@@ -158,15 +176,26 @@ int main(int argc, char* argv[]) {
     for(auto el : nodes) {
         std::cout << "\t" << el.second->get_friendly_name() << "\t" <<el.second.get()<<'\n';
         for(auto par_c : el.second->input_values()) {
-            auto par = par_c.as_single_output_node(); 
+            auto par = par_c.get_node_shared_ptr(); 
             std::cout<<"\t\t"<<par->get_friendly_name()<<"\t"<<par.get()<<"\n\n";
+            // auto dep = el.second->get_control_dependencies();
+            // std::cout<<"\tdependencies:\n";
+            // for(auto el_d : dep) {
+            //     std::cout<<"\t\t"<<el_d->get_friendly_name()<<"\t"<<el_d<<"\n\n";
+            // }
+            // auto dependent = el.second->get_control_dependents();
+            // std::cout<<"\tdependent:\n";
+            // for(auto el_d : dependent) {
+            //     std::cout<<"\t\t"<<el_d->get_friendly_name()<<"\t"<<el_d<<"\n\n";
+            // }
+            // std::cout<<"\n___________________________\n";
         }
     }
     std::cout<<"\nparameters:\n";
     for(auto par : parameters) {
         std::cout<<"\t"<<par->get_friendly_name()<<'\t'<<par.get()<<"\n";
         for(auto par_c : par->input_values()) {
-            auto par_n = par_c.as_single_output_node(); 
+            auto par_n = par_c.get_node_shared_ptr(); 
             std::cout<<"\t\t"<<par_n->get_friendly_name()<<"\t"<<par_n.get()<<"\n\n";
         }
     }
@@ -177,6 +206,23 @@ int main(int argc, char* argv[]) {
             auto par = par_c.as_single_output_node(); 
             std::cout<<"\t\t"<<par->get_friendly_name()<<"\t"<<par.get()<<"\n\n";
         }
+    }
+
+
+    std::cout<<"\norigin:\n";
+    for(int i = 0; i<10; ++i) {
+        std::cout<<'\t'<<ops[i]->get_friendly_name()<<"\t"<<ops[i].get()<<"\n\n";
+        // auto dep = ops[i]->get_control_dependencies();
+        // std::cout<<"\tdependencies:\n";
+        // for(auto el : dep) {
+        //     std::cout<<"\t\t"<<el->get_friendly_name()<<"\t"<<el<<"\n\n";
+        // }
+        // auto dependent = ops[i]->get_control_dependents();
+        // std::cout<<"\tdependent:\n";
+        // for(auto el : dependent) {
+        //     std::cout<<"\t\t"<<el->get_friendly_name()<<"\t"<<el<<"\n\n";
+        // }
+        // std::cout<<"\n___________________________\n";
     }
     #endif
     std::cout << "All names are valid" << std::endl;
