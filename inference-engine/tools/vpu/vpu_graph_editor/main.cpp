@@ -12,7 +12,7 @@
 #include "cnn_network_ngraph_impl.hpp"
 
 
-#define DEBUG 3
+#define DEBUG 0
 
 
 //struct for file paths used to get needed data
@@ -43,6 +43,16 @@ filePaths(int argc, char* argv[]) {
 
 };
 
+template <typename T>
+std::shared_ptr<T> find(std::vector<std::shared_ptr<T>>& vector,const std::string& node) { 
+    for(auto el : vector) {
+        if(el->get_friendly_name() == node) {
+            return el;
+        }
+    }
+    return std::shared_ptr<T>(nullptr);
+}
+
 
 //reads names from file
 void readNames(std::set<std::string>& NamesCont, const std::string& filePath) {
@@ -56,15 +66,7 @@ void readNames(std::set<std::string>& NamesCont, const std::string& filePath) {
     }
 }
 
-template <typename T>
-std::shared_ptr<T> find(std::vector<std::shared_ptr<T>>& vector,const std::string& node) { 
-    for(auto el : vector) {
-        if(el->get_friendly_name() == node) {
-            return el;
-        }
-    }
-    return std::shared_ptr<T>(nullptr);
-}
+
 
 
 
@@ -98,9 +100,7 @@ int main(int argc, char* argv[]) {
     ngraph::ParameterVector parameters;
     for (auto op : ops) {
         if(out.erase(op->get_friendly_name()) > 0) {
-            #if DEBUG == 3
-            std::cout<<"args "<<op->get_friendly_name()<<"\n";
-            #endif
+            std::shared_ptr<ngraph::Node> new_op;
             if(!(op->is_parameter())) {
                 ngraph::OutputVector args;
                 for(auto& element : op->input_values()) {
@@ -108,18 +108,12 @@ int main(int argc, char* argv[]) {
                     auto&& name = el->get_friendly_name();
                     auto subNode = nodes.find(name);
                     if(subNode != nodes.end()) {
-                        #if DEBUG == 3
-                        std::cout<<"\t"<<subNode->second->get_friendly_name()<<"\t"<<subNode->second.get()<<"\n\n";
-                        #endif
                         args.push_back(subNode->second);
                         continue;
                     }
                     auto&& existing_parameter = find(parameters, name);
                     if(existing_parameter.get() != nullptr) {
                         args.push_back(existing_parameter);
-                        #if DEBUG == 3
-                        std::cout<<"\t"<<existing_parameter->get_friendly_name()<<"\t"<<existing_parameter.get()<<"\n\n";
-                        #endif
                         continue;
                     }
                     if(el->is_constant()) {
@@ -134,17 +128,15 @@ int main(int argc, char* argv[]) {
                     stubParameter->set_friendly_name(name);
                     parameters.push_back(stubParameter);
                     args.push_back(stubParameter);
-                    #if DEBUG == 3
-                        std::cout<<"\t"<<stubParameter->get_friendly_name()<<"\t"<<stubParameter.get()<<"\n\n";
-                    #endif
                 }
-                auto&& new_op = op->clone_with_new_inputs(args);
+                new_op = op->clone_with_new_inputs(args);
                 new_op->set_friendly_name(op->get_friendly_name());
                 nodes[op->get_friendly_name()] = new_op;
             }
             else {
                 const auto& stubParameter = std::make_shared<ngraph::opset3::Parameter>(op->get_element_type(), op->get_shape());
                 stubParameter->set_friendly_name(op->get_friendly_name());
+                new_op = stubParameter;
                 parameters.push_back(stubParameter);
             }
             for(size_t i = 0; i < op->get_output_size();++i) {
@@ -152,8 +144,7 @@ int main(int argc, char* argv[]) {
                 for (auto sel : set) {
                     auto&& el = sel.get_node();
                     if(out.find(el->get_friendly_name()) == out.end()) {
-                        auto res = std::make_shared<ngraph::opset3::Result>(op);
-                        //res->set_friendly_name(el->get_friendly_name());
+                        auto res = std::make_shared<ngraph::opset3::Result>(new_op);
                         results.push_back(res);
 
                     }
@@ -171,68 +162,9 @@ int main(int argc, char* argv[]) {
         std::cout << "wasn't found. Stop"<< std::endl;
         return 0;
     }
-    #if DEBUG == 3
-    std::cout<<"\ninput:\n";
-    for(auto el : nodes) {
-        std::cout << "\t" << el.second->get_friendly_name() << "\t" <<el.second.get()<<'\n';
-        for(auto par_c : el.second->input_values()) {
-            auto par = par_c.get_node_shared_ptr(); 
-            std::cout<<"\t\t"<<par->get_friendly_name()<<"\t"<<par.get()<<"\n\n";
-            // auto dep = el.second->get_control_dependencies();
-            // std::cout<<"\tdependencies:\n";
-            // for(auto el_d : dep) {
-            //     std::cout<<"\t\t"<<el_d->get_friendly_name()<<"\t"<<el_d<<"\n\n";
-            // }
-            // auto dependent = el.second->get_control_dependents();
-            // std::cout<<"\tdependent:\n";
-            // for(auto el_d : dependent) {
-            //     std::cout<<"\t\t"<<el_d->get_friendly_name()<<"\t"<<el_d<<"\n\n";
-            // }
-            // std::cout<<"\n___________________________\n";
-        }
-    }
-    std::cout<<"\nparameters:\n";
-    for(auto par : parameters) {
-        std::cout<<"\t"<<par->get_friendly_name()<<'\t'<<par.get()<<"\n";
-        for(auto par_c : par->input_values()) {
-            auto par_n = par_c.get_node_shared_ptr(); 
-            std::cout<<"\t\t"<<par_n->get_friendly_name()<<"\t"<<par_n.get()<<"\n\n";
-        }
-    }
-    std::cout<<"\nresults:\n";
-    for(auto res : results){
-        std::cout<<"\t"<<res->get_friendly_name()<<'\t'<<res.get()<<"\n";
-        for(auto par_c : res->input_values()) {
-            auto par = par_c.as_single_output_node(); 
-            std::cout<<"\t\t"<<par->get_friendly_name()<<"\t"<<par.get()<<"\n\n";
-        }
-    }
-
-
-    std::cout<<"\norigin:\n";
-    for(int i = 0; i<10; ++i) {
-        std::cout<<'\t'<<ops[i]->get_friendly_name()<<"\t"<<ops[i].get()<<"\n\n";
-        // auto dep = ops[i]->get_control_dependencies();
-        // std::cout<<"\tdependencies:\n";
-        // for(auto el : dep) {
-        //     std::cout<<"\t\t"<<el->get_friendly_name()<<"\t"<<el<<"\n\n";
-        // }
-        // auto dependent = ops[i]->get_control_dependents();
-        // std::cout<<"\tdependent:\n";
-        // for(auto el : dependent) {
-        //     std::cout<<"\t\t"<<el->get_friendly_name()<<"\t"<<el<<"\n\n";
-        // }
-        // std::cout<<"\n___________________________\n";
-    }
-    #endif
+    
     std::cout << "All names are valid" << std::endl;
     ngraph::Function subgraphFunc(results, parameters, "Subgraph");
     std::cout<<"Subgrap created"<<std::endl;
-    #if DEBUG == 3
-    auto s = subgraphFunc.get_ordered_ops();
-    for(auto op : s) {
-        std::cout<<op->get_friendly_name()<<'\n';
-    }
-    #endif
     return 0;
 }
