@@ -124,7 +124,7 @@ int main(int argc, char* argv[]) {
                     }
                     if(el->is_constant()) {
                         const auto&& constanta= dynamic_cast<ngraph::opset3::Constant*>(el.get());
-                        const auto& subConstant = std::make_shared<ngraph::opset3::Constant>(*constanta);
+                        const auto& subConstant = std::make_shared<ngraph::opset3::Constant>(constanta->get_element_type(), constanta->get_shape(), constanta->get_value_strings());
                         subConstant->set_friendly_name(el->get_friendly_name());
                         nodes[el->get_friendly_name()] = subConstant;
                         args.push_back(subConstant);
