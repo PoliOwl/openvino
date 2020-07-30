@@ -9,11 +9,16 @@
 #include <cstdlib>
 #include <map>
 #include <ngraph/opsets/opset3.hpp>
+#include "ngraph/pass/visualize_tree.hpp"
 #include "cnn_network_ngraph_impl.hpp"
 
 
 #define DEBUG 0
 
+
+void readNames(std::set<std::string>&, const std::string&); //read subgraph nodes names from file
+bool connection_check(std::shared_ptr<ngraph::Function>&, const  std::set<std::string>& ); //checks if graph is complete. If it is, return "", if not - name of node that is unnable to rich from every node
+void visit(const std::shared_ptr<ngraph::Node>&, std::map<std::string, bool>&); 
 
 //struct for file paths used to get needed data
 struct filePaths {
@@ -53,6 +58,18 @@ std::shared_ptr<T> find(std::vector<std::shared_ptr<T>>& vector,const std::strin
     return std::shared_ptr<T>(nullptr);
 }
 
+#if DEBUG == 4
+void print_input( std::shared_ptr<ngraph::Node> node, int level) {
+    for(int i = 0; i < level; ++i) {
+        std::cout<<"\t";
+    }
+    std::cout<<node->get_friendly_name()<<"\t"<<node.get()<<"\n\n";
+    for(auto input : node->input_values()) {
+        auto inp = input.get_node_shared_ptr();
+        print_input(inp, ++level);
+    }
+}
+#endif
 
 //reads names from file
 void readNames(std::set<std::string>& NamesCont, const std::string& filePath) {
@@ -66,16 +83,56 @@ void readNames(std::set<std::string>& NamesCont, const std::string& filePath) {
     }
 }
 
+void visit(const std::shared_ptr<ngraph::Node>& node, std::map<std::string, bool>& map) {
+    map[node->get_friendly_name()] = true;
+    for(auto& inp : node->input_values()) {
+        auto&& input = inp.get_node_shared_ptr();
+        if(map[input->get_friendly_name()] == false) {
+            visit(input, map);
+        }
+    }
+    if(node->is_output() == false) {
+        for(size_t i = 0; i < node->get_output_size();++i) {
+            auto&& set = node->get_output_target_inputs(i); 
+            for (auto& sel : set) {
+                auto el = sel.get_node();
+                if(map[el->get_friendly_name()] == false) {
+                    auto&& elPtr = el->output(0).get_node_shared_ptr();
+                    ///auto ptr = std::make_shared<ngraph::Node>(*el);
+                    visit(elPtr, map);
+                }
+            }
+        }
+    }
+    
+}
+
+std::string connection_check(const std::shared_ptr<ngraph::Function>& func,const  std::set<std::string>& original_names) {
+    auto&& ops = func->get_ordered_ops();
+    std::map<std::string, bool> visited;
+    for(auto op : ops) {
+        visited[op->get_friendly_name()] = false;
+    }
+    visit(ops[0], visited);
+    for(auto el : visited) {
+        if(el.second == false) {
+            if(original_names.count(el.first)) {
+                return el->first;
+            }
+        }
+    }
+    return "";
+}
 
 
 
 
 int main(int argc, char* argv[]) {
     filePaths file(argc, argv);
-    std::set<std::string> out;
-    readNames(out, file.namePath);
+    std::set<std::string> names; //set of subgraphs nodes names
+    readNames(names, file.namePath);
     #if DEBUG == 2
-    for(auto name: input) {
+    for(auto name: names) {
         std::cout << name<<'\n';
     }
     std::cout << "___________________________";
@@ -98,8 +155,9 @@ int main(int argc, char* argv[]) {
     ngraph::ResultVector results;
     std::map<std::string, std::shared_ptr<ngraph::Node>> nodes;
     ngraph::ParameterVector parameters;
-    for (auto op : ops) {
-        if(out.erase(op->get_friendly_name()) > 0) {
+    std::set<std::string> out = names;
+    for (auto op : ops) {                                  
+        if(out.erase(op->get_friendly_name()) > 0) {  //creates an operation that's clone of op if ops name was in out(copy of names)
             std::shared_ptr<ngraph::Node> new_op;
             if(!(op->is_parameter())) {
                 ngraph::OutputVector args;
@@ -162,9 +220,23 @@ int main(int argc, char* argv[]) {
         std::cout << "wasn't found. Stop"<< std::endl;
         return 0;
     }
-    
     std::cout << "All names are valid" << std::endl;
-    ngraph::Function subgraphFunc(results, parameters, "Subgraph");
-    std::cout<<"Subgrap created"<<std::endl;
+    const auto&  subgraphFunc =  std::make_shared<ngraph::Function>(results, parameters, "Subgraph"); 
+    std::vector<std::shared_ptr<ngraph::Function>> fv{subgraphFunc};
+    ::ngraph::pass::VisualizeTree("home/googlenetv4/faster.svg").run_on_module(fv);
+    std::cout<<"visualization created\n";
+    std::cout<<"Subgrap created\n"<<std::endl;
+    #if DEBUG == 3
+    auto s = subgraphFunc->get_ordered_ops();
+    for(auto op : s) {
+        std::cout<<op->get_friendly_name()<<'\n';
+    }
+    #endif
+    std::string connection = connection_check(subgraphFunc, names); //checks connection
+    if(!(connection == "")) {
+        std::cout << "Graph isn't complete: " + connection + " dosen't connect to some nodes\n";
+        return 0;
+    }
+
     return 0;
 }
