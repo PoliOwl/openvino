@@ -1,40 +1,44 @@
-#include <iostream>
+#include "ngraph/pass/visualize_tree.hpp"
+#include "cnn_network_ngraph_impl.hpp"
+#include "net_pass.h"
+
+#include <ngraph/opsets/opset3.hpp>
 #include <inference_engine.hpp>
 #include <generic_ie.hpp>
-#include "net_pass.h"
+
+#include <iostream>
 #include <fstream>
 #include <set>
 #include <vector>
 #include <string>
 #include <cstdlib>
 #include <map>
-#include <ngraph/opsets/opset3.hpp>
-#include "ngraph/pass/visualize_tree.hpp"
-#include "cnn_network_ngraph_impl.hpp"
+
 
 
 #define DEBUG 3
 
 
 void readNames(std::set<std::string>&, const std::string&); //read subgraph nodes names from file
-bool connection_check(std::shared_ptr<ngraph::Function>&, const  std::set<std::string>& ); //checks if graph is complete. If it is, return "", if not - name of node that is unnable to rich from every node
+bool connectionCheck(std::shared_ptr<ngraph::Function>&, const  std::set<std::string>& ); //checks if graph is complete. If it is, return "", if not - name of node that is unnable to rich from every node
 void visit(const std::shared_ptr<ngraph::Node>&, std::map<std::string, bool>&); 
 std::shared_ptr<ngraph::Node> make_before_op(std::map<std::string, std::shared_ptr<ngraph::Node>>& before, std::shared_ptr<ngraph::Node>& op, ngraph::ParameterVector& parameters); //creates node for beforegraph
-std::shared_ptr<ngraph::Node> create_op(std::map<std::string, std::shared_ptr<ngraph::Node>>& nodes, std::shared_ptr<ngraph::Node>& op, 
+std::shared_ptr<ngraph::Node> createOp(std::map<std::string, std::shared_ptr<ngraph::Node>>& nodes, std::shared_ptr<ngraph::Node>& op, 
                                         ngraph::ParameterVector& parameters, std::map<std::string, std::shared_ptr<ngraph::Node>>& before, 
-                                        ngraph::ParameterVector& before_parameters, ngraph::ResultVector& before_results, bool add_node_to_before); //creats operation, 
-//if add_node_to_before = false, then it doesn't uses before.. parametrs  and only creates node, otherwise invokes make_before_op using before and before before_parameters and adds result to before_results 
+                                        ngraph::ParameterVector& beforeParameters, ngraph::ResultVector& beforeResults, bool add_node_to_before); //creats operation, 
+//if add_node_to_before = false, then it doesn't uses before.. parametrs  and only creates node, otherwise invokes make_before_op using before and before beforeParameters and adds result to beforeResults 
 
 //struct for file paths used to get needed data
-struct filePaths {
+struct FilePath {
 
 std::string IRpath;
 std::string namePath;
 std::string weightsPath;
+std::string inputPath;
 //void defult{};
 
 //gets values from command line 
-filePaths(int argc, char* argv[]) {
+FilePath(int argc, char* argv[]) {
     if (argc < 3) {
         std::cerr << "Missing required command line arguments" << std::endl;
         std::exit(EXIT_FAILURE);
@@ -43,11 +47,14 @@ filePaths(int argc, char* argv[]) {
        IRpath = argv[1];
        namePath = argv[2];
        weightsPath = "NONE";
+       inputPath = "NONE";
     }
     else {
+
         IRpath = argv[1];
         namePath = argv[3];
         weightsPath = argv[2];
+
     }
 }
 
@@ -64,14 +71,14 @@ std::shared_ptr<T> find(std::vector<std::shared_ptr<T>>& vector,const std::strin
 }
 
 #if DEBUG == 4
-void print_input( std::shared_ptr<ngraph::Node> node, int level) {
+void printInput( std::shared_ptr<ngraph::Node> node, int level) {
     for(int i = 0; i < level; ++i) {
         std::cout<<"\t";
     }
     std::cout<<node->get_friendly_name()<<"\t"<<node.get()<<"\n\n";
     for(auto input : node->input_values()) {
         auto inp = input.get_node_shared_ptr();
-        print_input(inp, ++level);
+        printInput(inp, ++level);
     }
 }
 #endif
@@ -117,7 +124,7 @@ void visit(const std::shared_ptr<ngraph::Node>& node, std::map<std::string, bool
     
 }
 
-std::string connection_check(const std::shared_ptr<ngraph::Function>& func,const  std::set<std::string>& original_names) {
+std::string connectionCheck(const std::shared_ptr<ngraph::Function>& func,const  std::set<std::string>& originalNames) {
     auto&& ops = func->get_ordered_ops();
     std::map<std::string, bool> visited;
     for(auto op : ops) {
@@ -126,7 +133,7 @@ std::string connection_check(const std::shared_ptr<ngraph::Function>& func,const
     visit(ops[0], visited);
     for(auto el : visited) {
         if(el.second == false) {
-            if(original_names.count(el.first)) {
+            if(originalNames.count(el.first)) {
                 return el.first;
             }
         }
@@ -143,9 +150,9 @@ std::shared_ptr<ngraph::Node> make_before_op(std::map<std::string, std::shared_p
             args.push_back(befNode->second);
             continue;
         }
-        auto&& existing_parameter = find(parameters, el->get_friendly_name());
-        if(existing_parameter.get() != nullptr) {
-            args.push_back(existing_parameter);
+        auto&& existingParameter = find(parameters, el->get_friendly_name());
+        if(existingParameter.get() != nullptr) {
+            args.push_back(existingParameter);
             continue;
         }
         if(el->is_constant()) {
@@ -165,16 +172,16 @@ std::shared_ptr<ngraph::Node> make_before_op(std::map<std::string, std::shared_p
         }
         args.push_back(make_before_op(before, el, parameters));
     }
-    auto new_op = op->clone_with_new_inputs(args);
-    new_op->set_friendly_name(op->get_friendly_name());
-    before[op->get_friendly_name()] = new_op;
-    return new_op;
+    auto newOp = op->clone_with_new_inputs(args);
+    newOp->set_friendly_name(op->get_friendly_name());
+    before[op->get_friendly_name()] = newOp;
+    return newOp;
 }
 
-std::shared_ptr<ngraph::Node> create_op(std::map<std::string, std::shared_ptr<ngraph::Node>>& nodes, std::shared_ptr<ngraph::Node>& op, 
+std::shared_ptr<ngraph::Node> createOp(std::map<std::string, std::shared_ptr<ngraph::Node>>& nodes, std::shared_ptr<ngraph::Node>& op, 
                                         ngraph::ParameterVector& parameters, std::map<std::string, std::shared_ptr<ngraph::Node>>& before, 
-                                        ngraph::ParameterVector& before_parameters, ngraph::ResultVector& before_results, bool add_node_to_before = false){
-     std::shared_ptr<ngraph::Node> new_op;
+                                        ngraph::ParameterVector& beforeParameters, ngraph::ResultVector& beforeResults, bool addNodeToBefore = false){
+     std::shared_ptr<ngraph::Node> newOp;
             if(!(op->is_parameter())) {
                 ngraph::OutputVector args;
                 for(auto& element : op->input_values()) {
@@ -185,9 +192,9 @@ std::shared_ptr<ngraph::Node> create_op(std::map<std::string, std::shared_ptr<ng
                         args.push_back(subNode->second);
                         continue;
                     }
-                    auto&& existing_parameter = find(parameters, name);
-                    if(existing_parameter.get() != nullptr) {
-                        args.push_back(existing_parameter);
+                    auto&& existingParameter = find(parameters, name);
+                    if(existingParameter.get() != nullptr) {
+                        args.push_back(existingParameter);
                         continue;
                     }
                     if(el->is_constant()) {
@@ -202,27 +209,27 @@ std::shared_ptr<ngraph::Node> create_op(std::map<std::string, std::shared_ptr<ng
                     stubParameter->set_friendly_name(name);
                     parameters.push_back(stubParameter);
                     args.push_back(stubParameter);
-                    if(add_node_to_before && !(el->is_parameter())) {
-                        auto before_node = make_before_op(before, el, before_parameters);
-                        before_results.push_back(std::make_shared<ngraph::opset3::Result>(before_node));
+                    if(addNodeToBefore && !(el->is_parameter())) {
+                        auto before_node = make_before_op(before, el, beforeParameters);
+                        beforeResults.push_back(std::make_shared<ngraph::opset3::Result>(before_node));
                     }
                 }
-                new_op = op->clone_with_new_inputs(args);
-                new_op->set_friendly_name(op->get_friendly_name());
-                nodes[op->get_friendly_name()] = new_op;
+                newOp = op->clone_with_new_inputs(args);
+                newOp->set_friendly_name(op->get_friendly_name());
+                nodes[op->get_friendly_name()] = newOp;
             }
             else {
                 const auto& stubParameter = std::make_shared<ngraph::opset3::Parameter>(op->get_element_type(), op->get_shape());
                 stubParameter->set_friendly_name(op->get_friendly_name());
-                new_op = stubParameter;
+                newOp = stubParameter;
                 parameters.push_back(stubParameter);
             }
-    return new_op;
+    return newOp;
 }
 
 
 int main(int argc, char* argv[]) {
-    filePaths file(argc, argv);
+    FilePath file(argc, argv);
     std::set<std::string> names; //set of subgraphs nodes names
     readNames(names, file.namePath);
     #if DEBUG == 2
@@ -246,32 +253,32 @@ int main(int argc, char* argv[]) {
     }
     auto nGraphFunc = ngraphNetwork->getFunction();
     auto ops = nGraphFunc->get_ordered_ops();
-    ngraph::ResultVector subgraph_results;
-    ngraph::ResultVector before_results;
-    std::map<std::string, std::shared_ptr<ngraph::Node>> subgraph_nodes;
-    std::map<std::string, std::shared_ptr<ngraph::Node>> before_nodes;
-    ngraph::ParameterVector before_parameters;
-    ngraph::ParameterVector subgraph_parameters;
+    ngraph::ResultVector subgraphResults;
+    ngraph::ResultVector beforeResults;
+    std::map<std::string, std::shared_ptr<ngraph::Node>> subgraphNodes;
+    std::map<std::string, std::shared_ptr<ngraph::Node>> beforeNodes;
+    ngraph::ParameterVector beforeParameters;
+    ngraph::ParameterVector subgraphParameters;
     std::set<std::string> out = names;
-    bool subgraph_not_started = true;
+    bool subgraphNotStarted = true;
     for (auto op : ops) {                                  
         if(out.erase(op->get_friendly_name()) > 0) {  //creates an operation that's clone of op if ops name was in out(copy of names)
-            subgraph_not_started = false;
-            auto sub_op = create_op(subgraph_nodes, op, subgraph_parameters, before_nodes, before_parameters, before_results, true);
+            subgraphNotStarted = false;
+            auto subOp = createOp(subgraphNodes, op, subgraphParameters, beforeNodes, beforeParameters, beforeResults, true);
             for(size_t i = 0; i < op->get_output_size();++i) {
                 auto set = op->get_output_target_inputs(i); 
                 for (auto sel : set) {
                     auto&& el = sel.get_node();
                     if(out.find(el->get_friendly_name()) == out.end()) {
-                        auto res = std::make_shared<ngraph::opset3::Result>(sub_op);
-                        subgraph_results.push_back(res);
+                        auto res = std::make_shared<ngraph::opset3::Result>(subOp);
+                        subgraphResults.push_back(res);
 
                     }
                 }
             }
         }
-        if(subgraph_not_started) {
-            create_op(before_nodes, op, before_parameters, before_nodes, before_parameters, before_results);
+        if(subgraphNotStarted) {
+            createOp(beforeNodes, op, beforeParameters, beforeNodes, beforeParameters, beforeResults);
         }
         if (out.empty()) {
            break;
@@ -285,8 +292,8 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     std::cout << "All names are valid" << std::endl;
-    const auto&  subgraphFunc =  std::make_shared<ngraph::Function>(subgraph_results, subgraph_parameters, "Subgraph"); 
-    const auto&  beforeFunc =  std::make_shared<ngraph::Function>(before_results, before_parameters, "Beforegraph"); 
+    const auto&  subgraphFunc =  std::make_shared<ngraph::Function>(subgraphResults, subgraphParameters, "Subgraph"); 
+    const auto&  beforeFunc =  std::make_shared<ngraph::Function>(beforeResults, beforeParameters, "Beforegraph"); 
     std::cout<<"Subgrap created\n"<<std::endl;
     #if DEBUG == 3
     std::cout<<"\n______subgraph______________\n";
@@ -300,11 +307,13 @@ int main(int argc, char* argv[]) {
         std::cout<<op->get_friendly_name()<<'\n';
     }
     #endif
-    std::string connection = connection_check(subgraphFunc, names); //checks connection
+    std::string connection = connectionCheck(subgraphFunc, names); //checks connection
     if(!(connection == "")) {
         std::cout << "Graph isn't complete: " + connection + " dosen't connect to some nodes\n";
         return 0;
     }
 
+ 
     return 0;
+   
 }
