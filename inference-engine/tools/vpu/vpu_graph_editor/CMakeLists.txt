@@ -27,14 +27,19 @@ function(add_graph_edit TARGET_NAME)
             Threads::Threads
         PUBLIC 
             pugixml vpu_common_lib
-            ${NGRAPH_LIBRARIES} inference_engine_lp_transformations)
+            ${NGRAPH_LIBRARIES} inference_engine_lp_transformations
+            ngraphFunctions)
 
     target_include_directories(${TARGET_NAME}
         SYSTEM PRIVATE
             "${IE_MAIN_SOURCE_DIR}/src/legacy_api/include"
             "${IE_MAIN_SOURCE_DIR}/src/plugin_api"
             "${IE_MAIN_SOURCE_DIR}/src/inference_engine"
-            )
+            "${IE_MAIN_SOURCE_DIR}/tests/ngraph_functions/include"
+            "${IE_MAIN_SOURCE_DIR}/samples/common/samples"
+            "${IE_MAIN_SOURCE_DIR}/samples/common/format_reader"
+            "${IE_MAIN_SOURCE_DIR}/tests/ie_test_utils")
+    
 
 
   
