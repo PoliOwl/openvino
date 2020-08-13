@@ -643,8 +643,18 @@ int main(int argc, char* argv[]) {
             else {
                beforeOutputs.push_back(loadImage(file.inputPath, param));
             }
-            fileNames[name] = file.inputFileName+name+".bin";
-            std::ofstream f(fileNames[name]);
+            auto saveFileName = file.inputFileName;
+            for(size_t i =0; i < name.size(); ++i) {
+                if(name[i] == '/') {
+                    saveFileName += "-";
+                }
+                else {
+                    saveFileName += name[i];
+                }
+            }
+            saveFileName += ".bin";
+            fileNames[name] = saveFileName;
+            std::ofstream f(saveFileName, std::fstream::out);
             if(!f.is_open()) {
                 std::cout << "error while opening save file\n";
                 return 1;
