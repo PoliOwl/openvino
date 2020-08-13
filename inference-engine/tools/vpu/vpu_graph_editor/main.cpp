@@ -23,8 +23,9 @@
 
 
 
-#define DEBUG 3
+#define DEBUG 5
 #define MAKE_INPUTS 1
+#define CALCULATE_SUBGRAPH  1
 
 
 void readNames(std::set<std::string>&, const std::string&); //read subgraph nodes names from file
@@ -54,8 +55,9 @@ std::string namePath;
 std::string weightsPath;
 std::string inputPath;
 std::string forVisualPath;
-std::string deviceName = "CPU";
-bool likeNet = false;
+std::string inputFileName = "Result";
+std::string deviceName =  "MYRIAD";
+bool calcNet = false;
 //void defult{};
 
 //gets values from command line 
@@ -69,7 +71,6 @@ FilePath(int argc, char* argv[]) {
        namePath = argv[2];
     }
     else {
-
         int begin = 0;
         if(argv[3][0] !='-') {
         IRpath = argv[1];
@@ -83,10 +84,6 @@ FilePath(int argc, char* argv[]) {
             begin = 3;
         }
         for(int i = begin; i < argc; ++i) {
-            if(i + 1 == argc) {
-                std::cerr << "Missing required command line arguments" << std::endl;
-                std::exit(EXIT_FAILURE);
-            }
             std::string operation = argv[i];
             if(operation == "-i") {
                 inputPath = argv[++i];
@@ -96,6 +93,14 @@ FilePath(int argc, char* argv[]) {
                 forVisualPath = argv[++i];
                 continue;
             } 
+            if(operation == "-f") {
+                inputFileName = argv[++i];
+                continue;
+            }
+            if(operation == "-c") {
+                calcNet = true;
+                continue;
+            }
             std::cout<<"Unknown operaion " << argv[i]<<std::endl;
             std::exit(EXIT_FAILURE);
         }
@@ -247,7 +252,7 @@ std::vector<std::uint8_t> loadImage(const std::string &imageFilename,std::shared
 
     const auto dims = tens.get_shape();
 
-    const size_t N = dims[0]*4;
+    const size_t N = dims[0];
     const size_t C = dims[1];
     const size_t H = dims[2];
     const size_t W = dims[3];
@@ -274,7 +279,12 @@ std::vector<std::uint8_t> loadImage(const std::string &imageFilename,std::shared
             for (int w = 0; w < W; ++w) {
                 int x = static_cast<int>(std::floor((w + 0.5f) * xScale));
                 for (int c = 0; c < C; c++) {
-                   info.push_back( f32tof16(1.0 * RGB8[(y * img_w + x) * numImageChannels + c]));
+                    float tmp = 0.f;
+                    tmp = 1.0 * RGB8[(y * img_w + x) * numImageChannels + c];
+                    auto tmpVec = reinterpret_cast<std::uint8_t*>(&tmp);
+                    for(int i = 0; i < sizeof(float); ++i ) {
+                        info.push_back(tmpVec[i]);
+                    }
                 }
             }
         }
@@ -283,6 +293,17 @@ std::vector<std::uint8_t> loadImage(const std::string &imageFilename,std::shared
     return info;
 }
 
+
+size_t findIndex(const ngraph::ParameterVector& results,const std::string& name) {
+    size_t i = 0;
+    for(auto res : results) {
+        if(res->get_friendly_name() == name) {
+            return i;
+        }
+        ++i;
+    }
+    return results.size();
+}
 
 size_t findIndex(const ngraph::ResultVector& results,const std::string& name) {
     size_t i = 0;
@@ -305,7 +326,6 @@ std::shared_ptr<T> find(std::vector<std::shared_ptr<T>>& vector,const std::strin
     return std::shared_ptr<T>(nullptr);
 }
 
-
 #if DEBUG == 4
 void printInput( std::shared_ptr<ngraph::Node> node, int level) {
     for(int i = 0; i < level; ++i) {
@@ -319,6 +339,41 @@ void printInput( std::shared_ptr<ngraph::Node> node, int level) {
 }
 #endif
 
+bool loadBinaryTensor(const std::string &binaryFilename, InferenceEngine::Blob::Ptr &blob) {
+    InferenceEngine::TensorDesc tensDesc = blob->getTensorDesc();
+    if (tensDesc.getPrecision() != InferenceEngine::Precision::FP16) {
+        std::cout << "loadBinaryTensor error: Input must have FP16 precision" << std::endl;
+        return false;
+    }
+
+    std::ifstream binaryFile(binaryFilename, std::ios_base::binary | std::ios_base::ate);
+
+    if (!binaryFile) {
+        std::cout << "loadBinaryTensor error: While opening a file an error is encountered" << std::endl;
+        return false;
+    }
+
+    int fileSize = binaryFile.tellg();
+    binaryFile.seekg(0, std::ios_base::beg);
+    size_t count = blob->size();
+    if (fileSize != count * sizeof(float)) {
+        std::cout << "loadBinaryTensor error: File contains insufficient items" << std::endl;
+        return false;
+    }
+
+    if (binaryFile.good()) {
+        int16_t *blobDataPtr = std::dynamic_pointer_cast<InferenceEngine::TBlob<int16_t>>(blob)->data();
+        for (size_t i = 0; i < count; i++) {
+            float tmp = 0.f;
+            binaryFile.read(reinterpret_cast<char *>(&tmp), sizeof(float));
+            blobDataPtr[i] = f32tof16(tmp);
+        }
+    } else {
+        std::cout << "loadBinaryTensor error: While reading a file an error is encountered" << std::endl;
+        return false;
+    }
+    return true;
+}
 
 //reads names from file
 void readNames(std::set<std::string>& NamesCont, const std::string& filePath) {
@@ -472,6 +527,7 @@ std::shared_ptr<ngraph::Node> createOp(std::map<std::string, std::shared_ptr<ngr
 }
 
 
+
 int main(int argc, char* argv[]) {
     FilePath file(argc, argv);
     std::set<std::string> names; //set of subgraphs nodes names
@@ -576,9 +632,10 @@ int main(int argc, char* argv[]) {
         std::vector<std::vector<std::uint8_t>> beforeOutputs;
         auto unBeforeOutputs = ngraph::helpers::interpreterFunction(beforeFunc, beforeInputs);
         std::cout<<"Beforegraph calculated\n";
-        ngraph::pass::ConvertPrecision<ngraph::element::Type_t::f16, ngraph::element::Type_t::f32>().run_on_function(subgraphFunc);
-        subgraphFunc->validate_nodes_and_infer_types();
+        std::map<std::string, std::string> fileNames;
+        size_t last = 0;
         for (auto param : subgraphParameters) {
+            auto&& name = param->get_friendly_name();
             auto i = findIndex(beforeResults, param->get_friendly_name());
             if( i != beforeResults.size()) {
                 beforeOutputs.push_back(unBeforeOutputs[i]);
@@ -586,32 +643,50 @@ int main(int argc, char* argv[]) {
             else {
                beforeOutputs.push_back(loadImage(file.inputPath, param));
             }
+            fileNames[name] = file.inputFileName+name+".bin";
+            std::ofstream f(fileNames[name]);
+            if(!f.is_open()) {
+                std::cout << "error while opening save file\n";
+                return 1;
+            }
+            for(auto el : beforeOutputs[last]) {
+                f << el;
+            }
+            ++last;
+            f.close();
         }
     //____________________________________
-        auto subOutputs = ngraph::helpers::interpreterFunction(subgraphFunc, beforeOutputs);
-        std::cout << "subgraph calculated\n";
-        std::vector<InferenceEngine::Blob::Ptr> resultBlob(subOutputs.size());
-        InferenceEngine::CNNNetwork net(subgraphFunc);
-        auto outs = net.getOutputsInfo();
-        for(size_t i = 0; i < subOutputs.size(); ++i) {
-            auto&& name = subgraphResults[i]->input_value(0).get_node_shared_ptr()->get_friendly_name();
-            resultBlob[i] = InferenceEngine::Blob::CreateFromData(outs[name]);
-            auto&& memory = InferenceEngine::as<InferenceEngine::MemoryBlob>(resultBlob[i]);
-            memory->allocate();
-            IE_ASSERT(memory);
-            auto&& lockedMemory = memory->wmap();
-            auto buffer = lockedMemory.as<std::uint8_t*>();
-            auto&& forCopy = subOutputs[i].data();
-            auto copySize = subOutputs[i].size();
-            std::copy(forCopy, forCopy + copySize, buffer);
+        if(file.calcNet) {
+            InferenceEngine::CNNNetwork subNetwork(subgraphFunc);
+            InferenceEngine::Core core;
+            auto netInputs = subNetwork.getInputsInfo();
+            for (auto &input : netInputs) {
+                const auto inputPrecision = input.second->getPrecision();
+                if (inputPrecision == InferenceEngine::Precision::FP32 ||
+                    inputPrecision == InferenceEngine::Precision::U8) {
+                    input.second->setPrecision(InferenceEngine::Precision::FP16);
+                }
+            }
+            auto netOutputs = subNetwork.getOutputsInfo();
+            for (auto &output : netOutputs) {
+                const auto outputPrecision = output.second->getPrecision();
+                if (outputPrecision == InferenceEngine::Precision::FP32) {
+                    output.second->setPrecision(InferenceEngine::Precision::FP16);
+                }
+            }
+            auto exeNet = core.LoadNetwork(subNetwork, file.deviceName);
+            auto netRequest = exeNet.CreateInferRequest();
+            for(auto input : netInputs) {
+                auto& name = input.first;
+                auto inputBlob = netRequest.GetBlob(name);
+                if(!loadBinaryTensor(fileNames[name], inputBlob)) {
+                    return 1;
+                }
+            }
+            netRequest.Infer();
+            std::cout << "subgraph calculated\n";
         }
-        #if DEBUG == 5
-        std::cout<<"Results: \n";
-        for(auto el : resultBlob) {
-            std::cout << el<<"\n";
-        }
-        std::cout<<"\n_________________________________\n";
-        #endif
+
     
     }
     #endif
