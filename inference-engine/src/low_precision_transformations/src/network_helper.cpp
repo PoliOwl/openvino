@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <blob_factory.hpp>
 #include <cmath>
-#include <details/caseless.hpp>
+#include <caseless.hpp>
 #include <limits>
 #include <map>
 #include <memory>
@@ -16,11 +16,11 @@
 #include <utility>
 #include <vector>
 
-#include <details/ie_cnn_network_tools.h>
+#include <legacy/details/ie_cnn_network_tools.h>
 #include <ie_common.h>
 #include <precision_utils.h>
-#include "cnn_network_impl.hpp"
-#include "ie_util_internal.hpp"
+#include <legacy/cnn_network_impl.hpp>
+#include <legacy/ie_util_internal.hpp>
 #include "ie_parallel.hpp"
 #include "low_precision_transformations/common/ie_lpt_exception.hpp"
 
@@ -647,6 +647,9 @@ std::shared_ptr<float> CNNNetworkHelper::getFloatData(const Blob::Ptr& srcBlob) 
     } else if (precision == Precision::I32) {
         const auto* srcData = srcBlob->buffer().as<PrecisionTrait<Precision::I32>::value_type*>();
         std::copy(srcData, srcData + dataSize, floatPtr.get());
+    } else if (precision == Precision::U32) {
+        const auto* srcData = srcBlob->buffer().as<PrecisionTrait<Precision::U32>::value_type*>();
+        std::copy(srcData, srcData + dataSize, floatPtr.get());
     } else if (precision == Precision::I64) {
         const auto* srcData = srcBlob->buffer().as<PrecisionTrait<Precision::I64>::value_type*>();
         std::copy(srcData, srcData + dataSize, floatPtr.get());
@@ -666,6 +669,7 @@ bool CNNNetworkHelper::isBlobPrecisionSupported(const Precision precision) {
         (precision == Precision::I8) ||
         (precision == Precision::U8) ||
         (precision == Precision::I32) ||
+        (precision == Precision::U32) ||
         (precision == Precision::I64) ||
         (precision == Precision::U64);
 }

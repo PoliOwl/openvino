@@ -39,8 +39,6 @@
 #include "ngraph/op/erf.hpp"
 #include "ngraph/op/exp.hpp"
 #include "ngraph/op/floor.hpp"
-#include "ngraph/op/fused/squeeze.hpp"
-#include "ngraph/op/fused/unsqueeze.hpp"
 #include "ngraph/op/gather.hpp"
 #include "ngraph/op/log.hpp"
 #include "ngraph/op/max_pool.hpp"
@@ -51,6 +49,7 @@
 #include "ngraph/op/not.hpp"
 #include "ngraph/op/parameter.hpp"
 #include "ngraph/op/range.hpp"
+#include "ngraph/op/reduce_logical_and.hpp"
 #include "ngraph/op/relu.hpp"
 #include "ngraph/op/reshape.hpp"
 #include "ngraph/op/round.hpp"
@@ -61,11 +60,13 @@
 #include "ngraph/op/sin.hpp"
 #include "ngraph/op/sinh.hpp"
 #include "ngraph/op/sqrt.hpp"
+#include "ngraph/op/squeeze.hpp"
 #include "ngraph/op/stop_gradient.hpp"
 #include "ngraph/op/tan.hpp"
 #include "ngraph/op/tanh.hpp"
 #include "ngraph/op/topk.hpp"
 #include "ngraph/op/transpose.hpp"
+#include "ngraph/op/unsqueeze.hpp"
 #include "ngraph/runtime/host_tensor.hpp"
 #include "ngraph/validation_util.hpp"
 #include "util/all_close_f.hpp"
@@ -314,7 +315,7 @@ TEST(eval, evaluate_broadcast_v3_numpy_vs_bidi)
     Shape in_shape{1, 4, 1};
 
     auto A = make_shared<op::Parameter>(element::f32, in_shape);
-    auto target_shape = op::Constant::create<int64_t>(element::i64, Shape{3}, {1, 1, 4});
+    auto target_shape = op::Constant::create<int64_t>(element::i64, Shape{3}, {1, 4, 4});
     auto bcast_v3_num = make_shared<op::v3::Broadcast>(A, target_shape, op::BroadcastType::NUMPY);
     auto fun_num = make_shared<Function>(OutputVector{bcast_v3_num}, ParameterVector{A});
 
@@ -340,6 +341,26 @@ TEST(eval, evaluate_broadcast_v3_numpy_vs_bidi)
     auto result_val2 = read_vector<float>(result2);
     vector<float> expec2{1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4};
     ASSERT_EQ(expec2, result_val2);
+}
+
+TEST(eval, evaluate_broadcast_v3_bidi_3d)
+{
+    Shape in_shape{1, 4, 1};
+
+    auto A = make_shared<op::Parameter>(element::f32, in_shape);
+    auto target_shape = op::Constant::create<int64_t>(element::i64, Shape{3}, {1, 1, 3});
+    auto bcast_v3_num =
+        make_shared<op::v3::Broadcast>(A, target_shape, op::BroadcastType::BIDIRECTIONAL);
+    auto fun_num = make_shared<Function>(OutputVector{bcast_v3_num}, ParameterVector{A});
+
+    auto result = make_shared<HostTensor>();
+    ASSERT_TRUE(fun_num->evaluate(
+        {result}, {make_host_tensor<element::Type_t::f32>(in_shape, {1.0f, 2.0f, 3.0f, 4.0f})}));
+    EXPECT_EQ(result->get_element_type(), element::f32);
+    EXPECT_EQ(result->get_partial_shape(), (PartialShape{1, 4, 3}));
+    auto result_val = read_vector<float>(result);
+    vector<float> expec{1.0f, 1.0f, 1.0f, 2.0f, 2.0f, 2.0f, 3.0f, 3.0f, 3.0f, 4.0f, 4.0f, 4.0f};
+    ASSERT_EQ(expec, result_val);
 }
 
 TEST(eval, evaluate_broadcast_v3_bidi_4d)
@@ -1331,25 +1352,6 @@ TEST(eval, eval_transpose)
     }
 }
 
-TEST(eval, max_pool_v0_dynamic)
-{
-    Shape window_shape{3};
-    auto A = make_shared<op::Parameter>(element::f32, PartialShape::dynamic());
-    auto f =
-        make_shared<Function>(make_shared<op::v0::MaxPool>(A, window_shape), ParameterVector{A});
-    auto result_tensor = make_shared<HostTensor>();
-
-    ASSERT_TRUE(f->evaluate({result_tensor},
-                            {make_host_tensor<element::Type_t::f32>(
-                                {1, 1, 14}, {0, 1, 0, 2, 1, 0, 3, 2, 0, 0, 2, 0, 0, 0})}));
-
-    EXPECT_EQ(result_tensor->get_element_type(), element::f32);
-    EXPECT_EQ(result_tensor->get_partial_shape(), (PartialShape{1, 1, 12}));
-    auto cval = read_vector<float>(result_tensor);
-    vector<float> out{1, 2, 2, 2, 3, 3, 3, 2, 2, 2, 2, 0};
-    ASSERT_EQ(cval, out);
-}
-
 TEST(eval, max_pool_v1_dynamic)
 {
     Shape window_shape{3};
@@ -1910,4 +1912,26 @@ TEST(eval, topk_v0_param_dyn_k0)
 
     vector<int32_t> expec0{0, 1, 1, 2, 2, 0, 2, 2, 0, 1, 1, 0};
     ASSERT_EQ(result0_val, expec0);
+}
+
+TEST(eval, reduce_logical_and__neg_axis)
+{
+    const auto data = make_shared<op::Parameter>(element::boolean, Shape{2, 2, 2});
+    const auto axes = make_shared<op::Parameter>(element::i64, Shape{});
+
+    const auto op = make_shared<op::v1::ReduceLogicalAnd>(data, axes);
+
+    auto fun = make_shared<Function>(op, ParameterVector{data, axes});
+
+    auto result = make_shared<HostTensor>();
+
+    // when ReduceLogicalAnd node evaluator returns false -> the Function object throws
+    EXPECT_THROW(
+        fun->evaluate({result},
+                      {
+                          make_host_tensor<element::Type_t::boolean>(
+                              Shape{2, 2, 2}, {true, false, true, false, true, false, true, false}),
+                          make_host_tensor<element::Type_t::i64>(Shape{}, {-1}),
+                      }),
+        ngraph::ngraph_error);
 }

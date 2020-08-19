@@ -8,6 +8,7 @@
 #include <assert.h>
 
 #include <ngraph/function.hpp>
+#include <ngraph/op/util/op_types.hpp>
 #include <ngraph/pass/visualize_tree.hpp>
 
 std::pair<bool, std::string> compare_functions(const std::shared_ptr<ngraph::Function> & f1, const std::shared_ptr<ngraph::Function> & f2) {
@@ -75,7 +76,7 @@ void check_rt_info(const std::shared_ptr<ngraph::Function> & f) {
 
     std::ostringstream err_log;
     for (auto & op : f->get_ops()) {
-        if (op->is_constant()) continue;
+        if (ngraph::op::is_constant(op)) continue;
 
         const auto & rt_info = op->get_rt_info();
         for (const auto & attr_name : attrs_to_check) {
@@ -89,9 +90,4 @@ void check_rt_info(const std::shared_ptr<ngraph::Function> & f) {
     if (!err_msg.empty()) {
         throw ngraph::ngraph_error(err_msg);
     }
-}
-
-void visualize_function(std::shared_ptr<ngraph::Function> f, const std::string & file_name) {
-    std::vector<std::shared_ptr<ngraph::Function> > g{f};
-    ngraph::pass::VisualizeTree(file_name).run_on_module(g);
 }

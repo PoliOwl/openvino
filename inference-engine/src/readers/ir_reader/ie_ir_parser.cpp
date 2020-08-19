@@ -27,8 +27,8 @@
 
 #include <cpp/ie_cnn_network.h>
 #include "ie_blob_stream.hpp"
-#include "details/caseless.hpp"
-#include "ie_ngraph_utils.hpp"
+#include "caseless.hpp"
+#include <legacy/ie_ngraph_utils.hpp>
 #include "generic_ie.hpp"
 #include "precision_utils.h"
 #include "blob_factory.hpp"
@@ -330,7 +330,6 @@ std::shared_ptr<ngraph::Node> V10Parser::createNode(const std::vector<ngraph::Ou
         std::make_shared<LayerCreator<ngraph::op::Range>>("Range"),
         std::make_shared<LayerCreator<ngraph::op::PriorBox>>("PriorBox"),
         std::make_shared<LayerCreator<ngraph::op::PriorBoxClustered>>("PriorBoxClustered"),
-        std::make_shared<LayerCreator<ngraph::op::Proposal>>("Proposal"),
         std::make_shared<LayerCreator<ngraph::op::v1::ReduceMax>>("ReduceMax"),
         std::make_shared<LayerCreator<ngraph::op::v1::ReduceMin>>("ReduceMin"),
         std::make_shared<LayerCreator<ngraph::op::v1::ReduceMean>>("ReduceMean"),
@@ -354,7 +353,7 @@ std::shared_ptr<ngraph::Node> V10Parser::createNode(const std::vector<ngraph::Ou
         std::make_shared<LayerCreator<ngraph::op::Squeeze>>("Squeeze"),
         std::make_shared<LayerCreator<ngraph::op::Tan>>("Tan"),
         std::make_shared<LayerCreator<ngraph::op::Tanh>>("TanH"),
-        std::make_shared<LayerCreator<ngraph::op::Tile>>("Tile"),
+        std::make_shared<LayerCreator<ngraph::op::v0::Tile>>("Tile"),
         std::make_shared<LayerCreator<ngraph::op::v1::TopK>>("TopK"),
         std::make_shared<LayerCreator<ngraph::op::TensorIterator>>("TensorIterator"),
         std::make_shared<LayerCreator<ngraph::op::Transpose>>("Transpose"),
@@ -369,7 +368,7 @@ std::shared_ptr<ngraph::Node> V10Parser::createNode(const std::vector<ngraph::Ou
 
     // Check that operation in default opsets
     auto isDefaultOpSet = [](const std::string& version) -> bool {
-        for (size_t i = 1; i <= 3; i++) {
+        for (size_t i = 1; i <= 4; i++) {
             std::string opset_name = "opset" + std::to_string(i);
             if (version == opset_name)
                 return true;
@@ -381,7 +380,7 @@ std::shared_ptr<ngraph::Node> V10Parser::createNode(const std::vector<ngraph::Ou
         if (!inputs[i].get_node())
             THROW_IE_EXCEPTION << params.type << " layer " << params.name << " with id: " << params.layerId
                 << " has incorrect input with index " << i << "!";
-        if (inputs[i].get_element_type().get_type_enum() == ngraph::element::Type_t::undefined)
+        if (ngraph::element::Type_t::undefined == inputs[i].get_element_type())
             THROW_IE_EXCEPTION << params.type << " layer " << params.name << " with id: " << params.layerId
                 << " has undefined element type for input with index " << i << "!";
     }
@@ -714,36 +713,6 @@ std::shared_ptr<ngraph::Node> V10Parser::LayerCreator<ngraph::op::PriorBoxCluste
     attr.clip = (GetIntAttr(dn, "clip") != 0);
 
     return std::make_shared<ngraph::op::PriorBoxClustered>(inputs[0], inputs[1], attr);
-}
-
-// Proposal layer
-template <>
-std::shared_ptr<ngraph::Node> V10Parser::LayerCreator<ngraph::op::Proposal>::createLayer(
-    const ngraph::OutputVector& inputs, const pugi::xml_node& node, std::istream& binStream,
-    const GenericLayerParams& layerParsePrms) {
-    checkParameters(inputs, layerParsePrms, 3);
-    pugi::xml_node dn = node.child("data");
-
-    if (dn.empty())
-        THROW_IE_EXCEPTION << "Cannot read parameter for " << getType() << " layer with name: " << layerParsePrms.name;
-
-    ngraph::op::ProposalAttrs attr;
-    attr.base_size = GetUIntAttr(dn, "base_size");
-    attr.pre_nms_topn = GetUIntAttr(dn, "pre_nms_topn");
-    attr.post_nms_topn = GetUIntAttr(dn, "post_nms_topn");
-    attr.nms_thresh = GetFloatAttr(dn, "nms_thresh");
-    attr.feat_stride = GetUIntAttr(dn, "feat_stride");
-    attr.min_size = GetUIntAttr(dn, "min_size");
-    attr.ratio = getParameters<float>(dn, "ratio");
-    attr.scale = getParameters<float>(dn, "scale");
-    attr.clip_after_nms = (GetIntAttr(dn, "clip_after_nms", 0) != 0);
-    attr.clip_before_nms = (GetIntAttr(dn, "clip_before_nms", 1) != 0);
-    attr.normalize = (GetIntAttr(dn, "normalize", 0) != 0);
-    attr.box_size_scale = GetFloatAttr(dn, "box_size_scale", 1.0f);
-    attr.box_coordinate_scale = GetFloatAttr(dn, "box_coordinate_scale", 1.0f);
-    attr.framework = GetStrAttr(dn, "framework", "");
-
-    return std::make_shared<ngraph::op::Proposal>(inputs[0], inputs[1], inputs[2], attr);
 }
 
 // PriorBox layer
@@ -1232,11 +1201,11 @@ std::shared_ptr<ngraph::Node> V10Parser::LayerCreator<ngraph::op::Result>::creat
 
 // Tile layer
 template <>
-std::shared_ptr<ngraph::Node> V10Parser::LayerCreator<ngraph::op::Tile>::createLayer(
+std::shared_ptr<ngraph::Node> V10Parser::LayerCreator<ngraph::op::v0::Tile>::createLayer(
     const ngraph::OutputVector& inputs, const pugi::xml_node& node, std::istream& binStream,
     const GenericLayerParams& layerParsePrms) {
     checkParameters(inputs, layerParsePrms, 2);
-    return std::make_shared<ngraph::op::Tile>(inputs[0], inputs[1]);
+    return std::make_shared<ngraph::op::v0::Tile>(inputs[0], inputs[1]);
 }
 
 // StridedSlice layer

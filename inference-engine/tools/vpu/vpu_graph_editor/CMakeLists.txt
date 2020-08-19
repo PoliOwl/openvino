@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2018-2020 Intel Corporation
+# Copyright (C) 2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,9 +14,7 @@
 # limitations under the License.
 #
 
-
-
-function(add_graph_edit TARGET_NAME)
+function(add_graph_editor_target TARGET_NAME)
     file(GLOB SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 
     add_executable(${TARGET_NAME} ${SOURCES})
@@ -27,7 +25,7 @@ function(add_graph_edit TARGET_NAME)
             Threads::Threads
         PUBLIC 
             pugixml vpu_common_lib
-            ${NGRAPH_LIBRARIES} inference_engine_lp_transformations
+            ${NGRAPH_LIBRARIES} 
             ngraphFunctions)
 
     target_include_directories(${TARGET_NAME}
@@ -39,12 +37,8 @@ function(add_graph_edit TARGET_NAME)
             "${IE_MAIN_SOURCE_DIR}/samples/common/samples"
             "${IE_MAIN_SOURCE_DIR}/samples/common/format_reader"
             "${IE_MAIN_SOURCE_DIR}/tests/ie_test_utils")
-    
-
-
-  
 endfunction()
 
-add_graph_edit(vpu_graph_editor)
+add_graph_editor_target(vpu_graph_editor)
 
 

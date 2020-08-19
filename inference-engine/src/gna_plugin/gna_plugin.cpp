@@ -18,12 +18,13 @@
 #include <utility>
 #include <limits>
 
-#include <low_precision_transformations/blob_transformation.hpp>
-#include <graph_tools.hpp>
+#include <legacy/graph_tools.hpp>
+#include <cpp_interfaces/exception2status.hpp>
+#include <legacy/net_pass.h>
 #include <debug.h>
 #include <gna/gna_config.hpp>
 #include "gna_plugin_config.hpp"
-#include <ie_util_internal.hpp>
+#include <legacy/ie_util_internal.hpp>
 #include "gna_plugin.hpp"
 #include "optimizer/gna_pass_manager.hpp"
 #include "layers/gna_layer_type.hpp"
@@ -337,10 +338,16 @@ void GNAPlugin::InitGNADevice() {
     graphCompiler.setGNAMemoryPtr(gnamem);
 }
 
-void GNAPlugin::LoadNetwork(ICNNNetwork &network) {
-    // move blobs from Constant layers to Convolution, Deconvolution, FullyConnected layers attributes
-    BlobTransformation blobsTransformation;
-    blobsTransformation.transform(network, true);
+void GNAPlugin::LoadNetwork(ICNNNetwork & _network) {
+    std::shared_ptr<InferenceEngine::details::CNNNetworkImpl> convertedNetwork;
+    if (_network.getFunction()) {
+        convertedNetwork = std::make_shared<InferenceEngine::details::CNNNetworkImpl>(_network);
+    }
+    InferenceEngine::ICNNNetwork &network = convertedNetwork ? *convertedNetwork : _network;
+
+    NetPass::ConvertPrecision(network, Precision::I64, Precision::I32);
+    NetPass::ConvertPrecision(network, Precision::U64, Precision::I32);
+    NetPass::ConvertPrecision(network, Precision::U32, Precision::I32);
 
     //  Check the input network
     std::string error;
@@ -367,6 +374,9 @@ void GNAPlugin::LoadNetwork(ICNNNetwork &network) {
         passes->registerPass<ReorderConcatInputsPass>();
         if (policy.PermutePolicy != Policy::Permute::DISABLED) {
             passes->registerPass<ReversePermutationsPass>();
+        }
+        if (policy.NHWCToNCHWPolicy != Policy::NHWCToNCHW::DISABLED) {
+            passes->registerPass<RemovePermutationsNHWCToNCHWPass>();
         }
         passes->registerPass<InsertIdentityLayerPass>();
         passes->registerPass<InsertCopyLayerPass>();
@@ -730,6 +740,7 @@ void GNAPlugin::LoadNetwork(ICNNNetwork &network) {
         }
     }
 
+    do_rotate_input = dnn->do_rotate_input;
     num_rotate_rows = dnn->num_rotate_rows;
     num_rotate_columns = dnn->num_rotate_columns;
 
@@ -911,7 +922,7 @@ uint32_t GNAPlugin::QueueInference(const InferenceEngine::BlobMap &inputs, Infer
                      is2D ? dims[dims.size() - 1] : dims[dims.size() - 1] * dims[dims.size() - 2] * dims[dims.size() - 3]);
 
         bool isOneChannel = input.second->getTensorDesc().getDims()[1] == 1;
-        if (((inputLayout == Layout::NC || inputLayout == Layout::NCHW)
+        if (do_rotate_input && ((inputLayout == Layout::NC || inputLayout == Layout::NCHW)
             != (inputsDesc->getOrientation(input.first) == kDnnInterleavedOrientation))
             && !isOneChannel) {
             RotateFeatures(reinterpret_cast<uint8_t *>(inputsDesc->getPtrInputsGlobal(input.first)[idx]),
@@ -1011,9 +1022,6 @@ void GNAPlugin::Wait(uint32_t request_idx) {
                          exportOutputDims[exportOutputDims.size() - 1],
                          outputDesc.num_bytes_per_element,
                          sizeof(float));
-        } else if (outputBlob->getTensorDesc().getLayout() != Layout::CN) {
-            THROW_GNA_EXCEPTION << "Expected output blob to have Layout::NC or Layout::CN. But was "
-                << outputBlob->getTensorDesc().getLayout();
         }
 
         if (gnadevice) {
@@ -1099,11 +1107,14 @@ Blob::Ptr GNAPlugin::GetInputBlob(const std::string& name, InferenceEngine::Prec
 }
 
 std::vector<InferenceEngine::MemoryStateInternal::Ptr>  GNAPlugin::QueryState() {
-    if (graphCompiler.memory_connection.empty()) {
-        return {};
+    if (memoryStates.size() != graphCompiler.memory_connection.size()) {
+        memoryStates.clear();
+        for (auto& connection : graphCompiler.memory_connection) {
+            auto state = std::make_shared<memory::GNAMemoryState>(connection.first, std::make_shared <GNAMemoryLayer>(connection.second));
+            memoryStates.emplace_back(state);
+        }
     }
-
-    return {std::make_shared<memory::GNAMemoryState>(shared_from_this())};
+    return memoryStates;
 }
 
 std::string GNAPlugin::GetName() const noexcept {
@@ -1168,6 +1179,7 @@ InferenceEngine::IExecutableNetwork::Ptr GNAPlugin::ImportNetwork(const std::str
     outputsDesc[0].orientation = getOrientation(std::get<0>(nnets.back())->obj.pLayers[std::get<0>(nnets.back())->obj.nLayers - 1]);
 #endif
 
+    do_rotate_input = header.doRotateInput;
     num_rotate_rows = header.nRotateRows;
     num_rotate_columns = header.nRotateColumns;
 
@@ -1221,7 +1233,7 @@ void GNAPlugin::Export(const std::string &fileName) {
                                  outputsDesc,
                                  inputsDataMap,
                                  outputsDataMap)
-                    .SetInputRotation(dnn->num_rotate_rows, dnn->num_rotate_columns);
+                    .SetInputRotation(dnn->num_rotate_rows, dnn->num_rotate_columns, dnn->do_rotate_input);
 
     for (auto && memoryConnection : graphCompiler.memory_connection) {
         serial.AddState(memoryConnection.second.gna_ptr, memoryConnection.second.reserved_size);
@@ -1251,6 +1263,10 @@ void GNAPlugin::UpdateFieldsFromConfig() {
 void GNAPlugin::QueryNetwork(const InferenceEngine::ICNNNetwork& network,
                              const std::map<std::string, std::string>& config,
                              InferenceEngine::QueryNetworkResult& res) const {
+    if (network.getFunction()) {
+        THROW_IE_EXCEPTION << NOT_IMPLEMENTED_str << " ngraph::Function is not supported natively";
+    }
+
     std::unordered_set<CNNLayer *> allLayers;
     InferenceEngine::InputsDataMap inputs;
 
@@ -1273,4 +1289,4 @@ void GNAPlugin::QueryNetwork(const InferenceEngine::ICNNNetwork& network,
                                                     res.supportedLayersMap.insert({ layer->name, GetName() });
                                                 }
                                             }, false);
-    }
+}

@@ -1,9 +1,12 @@
+// Copyright (C) 2020 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+//
 
 #include "ngraph/pass/visualize_tree.hpp"
 #include "cnn_network_ngraph_impl.hpp"
 #include "net_pass.h"
 #include "ngraph_functions/pass/convert_prc.hpp"
-//#include "functional_test_utils/blob_utils.hpp"
+#include "../common/vpu_tools_common.cpp"
 
 #include <ngraph/opsets/opset3.hpp>
 #include <inference_engine.hpp>
@@ -16,16 +19,13 @@
 #include <fstream>
 #include <set>
 #include <vector>
+
+
 #include <string>
 #include <cstdlib>
 #include <typeindex>
 #include <map>
 
-
-
-#define DEBUG 5
-#define MAKE_INPUTS 1
-#define CALCULATE_SUBGRAPH  1
 
 
 void readNames(std::set<std::string>&, const std::string&); //read subgraph nodes names from file
@@ -39,12 +39,7 @@ std::shared_ptr<ngraph::Node> createOp(std::map<std::string, std::shared_ptr<ngr
 size_t findIndex(const ngraph::ResultVector&,const std::string&); //finds index of a result, that has input with given friendly name
 std::vector<std::uint8_t> loadImage(const std::string &,std::shared_ptr<ngraph::opset3::Parameter>&); //loads data for parameter for given file
 
-inline float asfloat(uint32_t v) {
-    return *reinterpret_cast<float *>(&v);
-}
 
-#define EXP_MASK_F32 0x7F800000U
-#define EXP_MASK_F16     0x7C00U
 
 
 //struct for file paths used to get needed data
@@ -52,11 +47,12 @@ struct FilePath {
 
 std::string IRpath;
 std::string namePath;
-std::string weightsPath;
+std::string weightsPath = "";
 std::string inputPath;
 std::string forVisualPath;
 std::string inputFileName = "Result";
 std::string deviceName =  "MYRIAD";
+std::string helpMessage = "Help message: \n\tUsage: vpu_graph_editor <model IR path> [<weights path>] <txt file with nodes name path> [-i <image path>] [-f <inputs file name>] [-c]\n\timage MUST be bmp 24bpp\n\t swithc -c is used for calculating subgraph and comparing resuts\n";
 bool calcNet = false;
 //void defult{};
 
@@ -64,11 +60,19 @@ bool calcNet = false;
 FilePath(int argc, char* argv[]) {
     if (argc < 3) {
         std::cerr << "Missing required command line arguments" << std::endl;
+        std::cout << helpMessage;
         std::exit(EXIT_FAILURE);
     }
     if (argc == 3) {
        IRpath = argv[1];
        namePath = argv[2];
+        for(const auto& latter : IRpath){
+                if(latter == '.') {
+                    break;
+                }
+                weightsPath += latter;
+            }
+        weightsPath+= ".bin";
     }
     else {
         int begin = 0;
@@ -81,6 +85,13 @@ FilePath(int argc, char* argv[]) {
         else {
             IRpath = argv[1];
             namePath = argv[2];
+            for(const auto& latter : IRpath){
+                if(latter == '.') {
+                    break;
+                }
+                weightsPath += latter;
+            }
+            weightsPath+= ".bin";
             begin = 3;
         }
         for(int i = begin; i < argc; ++i) {
@@ -89,10 +100,6 @@ FilePath(int argc, char* argv[]) {
                 inputPath = argv[++i];
                 continue;
             }
-            if(operation == "-v") {
-                forVisualPath = argv[++i];
-                continue;
-            } 
             if(operation == "-f") {
                 inputFileName = argv[++i];
                 continue;
@@ -102,6 +109,7 @@ FilePath(int argc, char* argv[]) {
                 continue;
             }
             std::cout<<"Unknown operaion " << argv[i]<<std::endl;
+            std::cout << helpMessage;
             std::exit(EXIT_FAILURE);
         }
     }
@@ -109,148 +117,15 @@ FilePath(int argc, char* argv[]) {
 
 };
 
-class BitMap {
-private:
-    typedef struct {
-        unsigned short type   = 0u;               /* Magic identifier            */
-        unsigned int size     = 0u;               /* File size in bytes          */
-        unsigned int reserved = 0u;
-        unsigned int offset   = 0u;               /* Offset to image data, bytes */
-    } BmpHeader;
 
-    typedef struct {
-        unsigned int size = 0u;                   /* Header size in bytes      */
-        int width = 0, height = 0;                /* Width and height of image */
-        unsigned short planes = 0u;               /* Number of colour planes   */
-        unsigned short bits = 0u;                 /* Bits per pixel            */
-        unsigned int compression = 0u;            /* Compression type          */
-        unsigned int imagesize = 0u;              /* Image size in bytes       */
-        int xresolution = 0, yresolution = 0;     /* Pixels per meter          */
-        unsigned int ncolours = 0u;               /* Number of colours         */
-        unsigned int importantcolours = 0u;       /* Important colours         */
-    } BmpInfoHeader;
-
-public:
-    explicit BitMap(const std::string &filename) {
-        BmpHeader header;
-        BmpInfoHeader infoHeader;
-
-        std::ifstream input(filename, std::ios::binary);
-        if (!input) {
-            std::exit(EXIT_FAILURE);
-        }
-
-        input.read(reinterpret_cast<char *>(&header.type), 2);
-
-        if (header.type != 'M'*256+'B') {
-            std::cerr << "[BMP] file is not bmp type\n";
-            std::exit(EXIT_FAILURE);
-        }
-
-        input.read(reinterpret_cast<char *>(&header.size), 4);
-        input.read(reinterpret_cast<char *>(&header.reserved), 4);
-        input.read(reinterpret_cast<char *>(&header.offset), 4);
-
-        input.read(reinterpret_cast<char *>(&infoHeader), sizeof(BmpInfoHeader));
-
-        bool rowsReversed = infoHeader.height < 0;
-        _width = infoHeader.width;
-        _height = abs(infoHeader.height);
-
-        if (infoHeader.bits != 24) {
-            std::cerr << "[BMP] 24bpp only supported. But input has:" << infoHeader.bits << "\n";
-            return;
-        }
-
-        if (infoHeader.compression != 0) {
-            std::cerr << "[BMP] compression not supported\n";
-        }
-
-        int padSize = _width & 3;
-        char pad[3];
-        size_t size = _width * _height * 3;
-
-        _data.reset(new unsigned char[size], std::default_delete<unsigned char[]>());
-
-        input.seekg(header.offset, std::ios::beg);
-
-        // reading by rows in invert vertically
-        for (uint32_t i = 0; i < _height; i++) {
-            uint32_t storeAt = rowsReversed ? i : (uint32_t)_height - 1 - i;
-            input.read(reinterpret_cast<char *>(_data.get()) + _width * 3 * storeAt, _width * 3);
-            input.read(pad, padSize);
-        }
-    }
-
-    ~BitMap() = default;
-
-    size_t _height = 0;
-    size_t _width = 0;
-    std::shared_ptr<unsigned char> _data;
-
-public:
-    size_t size() const { return _width * _height * 3; }
-    size_t width() const { return _width; }
-    size_t height() const { return _height; }
-
-    std::shared_ptr<unsigned char> getData() {
-        return _data;
-    }
-};
-
-static short f32tof16(float x) {
-    static float min16 = asfloat((127 - 14) << 23);
-
-    static float max16 = asfloat(((127 + 15) << 23) | 0x007FE000);
-    static uint32_t max16f16 = ((15 + 15) << 10) | 0x3FF;
-
-    union {
-        float f;
-        uint32_t u;
-    } v{};
-    v.f = x;
-
-    uint32_t s = (v.u >> 16) & 0x8000;
-
-    v.u &= 0x7FFFFFFF;
-
-    if ((v.u & EXP_MASK_F32) == EXP_MASK_F32) {
-        if (v.u & 0x007FFFFF) {
-            return s | (v.u >> (23 - 10)) | 0x0200;
-        } else {
-            return s | (v.u >> (23 - 10));
-        }
-    }
-
-    float halfULP = asfloat(v.u & EXP_MASK_F32) * asfloat((127 - 11) << 23);
-    v.f += halfULP;
-
-    if (v.f < min16 * 0.5F) {
-        return s;
-    }
-
-    if (v.f < min16) {
-        return s | (1 << 10);
-    }
-
-    if (v.f >= max16) {
-        return max16f16 | s;
-    }
-
-    v.u -= ((127 - 15) << 23);
-
-    v.u >>= (23 - 10);
-
-    return v.u | s;
-}
 
 std::vector<std::uint8_t> loadImage(const std::string &imageFilename,std::shared_ptr<ngraph::opset3::Parameter>& param) {
-    auto& tens = param->output(0).get_tensor();
+    //auto& tens = param->get_output_tensor(0);
     //auto layout = tens.get_tensor_layout();
 
     BitMap reader(imageFilename);
 
-    const auto dims = tens.get_shape();
+    const auto dims = param->get_output_shape(0);
 
     const size_t N = dims[0];
     const size_t C = dims[1];
@@ -326,54 +201,7 @@ std::shared_ptr<T> find(std::vector<std::shared_ptr<T>>& vector,const std::strin
     return std::shared_ptr<T>(nullptr);
 }
 
-#if DEBUG == 4
-void printInput( std::shared_ptr<ngraph::Node> node, int level) {
-    for(int i = 0; i < level; ++i) {
-        std::cout<<"\t";
-    }
-    std::cout<<node->get_friendly_name()<<"\t"<<node.get()<<"\n\n";
-    for(auto input : node->input_values()) {
-        auto inp = input.get_node_shared_ptr();
-        printInput(inp, ++level);
-    }
-}
-#endif
 
-bool loadBinaryTensor(const std::string &binaryFilename, InferenceEngine::Blob::Ptr &blob) {
-    InferenceEngine::TensorDesc tensDesc = blob->getTensorDesc();
-    if (tensDesc.getPrecision() != InferenceEngine::Precision::FP16) {
-        std::cout << "loadBinaryTensor error: Input must have FP16 precision" << std::endl;
-        return false;
-    }
-
-    std::ifstream binaryFile(binaryFilename, std::ios_base::binary | std::ios_base::ate);
-
-    if (!binaryFile) {
-        std::cout << "loadBinaryTensor error: While opening a file an error is encountered" << std::endl;
-        return false;
-    }
-
-    int fileSize = binaryFile.tellg();
-    binaryFile.seekg(0, std::ios_base::beg);
-    size_t count = blob->size();
-    if (fileSize != count * sizeof(float)) {
-        std::cout << "loadBinaryTensor error: File contains insufficient items" << std::endl;
-        return false;
-    }
-
-    if (binaryFile.good()) {
-        int16_t *blobDataPtr = std::dynamic_pointer_cast<InferenceEngine::TBlob<int16_t>>(blob)->data();
-        for (size_t i = 0; i < count; i++) {
-            float tmp = 0.f;
-            binaryFile.read(reinterpret_cast<char *>(&tmp), sizeof(float));
-            blobDataPtr[i] = f32tof16(tmp);
-        }
-    } else {
-        std::cout << "loadBinaryTensor error: While reading a file an error is encountered" << std::endl;
-        return false;
-    }
-    return true;
-}
 
 //reads names from file
 void readNames(std::set<std::string>& NamesCont, const std::string& filePath) {
@@ -395,18 +223,18 @@ void readNames(std::set<std::string>& NamesCont, const std::string& filePath) {
 void visit(const std::shared_ptr<ngraph::Node>& node, std::map<std::string, bool>& map) {
     map[node->get_friendly_name()] = true;
     for(auto& inp : node->input_values()) {
-        auto&& input = inp.get_node_shared_ptr();
+        const auto& input = inp.get_node_shared_ptr();
         if(map[input->get_friendly_name()] == false) {
             visit(input, map);
         }
     }
-    if(node->is_output() == false) {
+    if(strcmp(node->get_type_info().name, "Result") != 0) {
         for(size_t i = 0; i < node->get_output_size();++i) {
-            auto&& set = node->get_output_target_inputs(i); 
+            const auto& set = node->get_output_target_inputs(i); 
             for (auto& sel : set) {
                 auto el = sel.get_node();
                 if(map[el->get_friendly_name()] == false) {
-                    auto&& elPtr = el->output(0).get_node_shared_ptr();
+                    const auto& elPtr = el->output(0).get_node_shared_ptr();
                     ///auto ptr = std::make_shared<ngraph::Node>(*el);
                     visit(elPtr, map);
                 }
@@ -417,7 +245,7 @@ void visit(const std::shared_ptr<ngraph::Node>& node, std::map<std::string, bool
 }
 
 std::string connectionCheck(const std::shared_ptr<ngraph::Function>& func,const  std::set<std::string>& originalNames) {
-    auto&& ops = func->get_ordered_ops();
+    const auto& ops = func->get_ordered_ops();
     std::map<std::string, bool> visited;
     for(auto op : ops) {
         visited[op->get_friendly_name()] = false;
@@ -433,29 +261,35 @@ std::string connectionCheck(const std::shared_ptr<ngraph::Function>& func,const 
     return "";
 }
 
-std::shared_ptr<ngraph::Node> make_before_op(std::map<std::string, std::shared_ptr<ngraph::Node>>& before, std::shared_ptr<ngraph::Node>& op, ngraph::ParameterVector& parameters) {
+std::shared_ptr<ngraph::Node> make_before_op(std::map<std::string, std::shared_ptr<ngraph::Node>>& before,const std::shared_ptr<ngraph::Node>& op, ngraph::ParameterVector& parameters) {
+    if(strcmp(op->get_type_info().name, "Parameter") == 0) {
+        const auto& stubParameter = std::make_shared<ngraph::opset3::Parameter>(op->get_element_type(), op->get_shape());
+        stubParameter->set_friendly_name(op->get_friendly_name());
+        parameters.push_back(stubParameter);
+        return stubParameter;
+    }
     ngraph::OutputVector args;
     for(auto& input : op->input_values()) {
-        auto&& el = input.get_node_shared_ptr();
+        const auto& el = input.get_node_shared_ptr();
         auto befNode = before.find(el->get_friendly_name());
         if(befNode != before.end()) {
             args.push_back(befNode->second);
             continue;
         }
-        auto&& existingParameter = find(parameters, el->get_friendly_name());
+        auto existingParameter = find(parameters, el->get_friendly_name());
         if(existingParameter.get() != nullptr) {
             args.push_back(existingParameter);
             continue;
         }
-        if(el->is_constant()) {
-            const auto&& constanta= dynamic_cast<ngraph::opset3::Constant*>(el.get());
-            const auto& subConstant = std::make_shared<ngraph::opset3::Constant>(constanta->get_element_type(), constanta->get_shape(), constanta->get_value_strings());
+        if(strcmp(el->get_type_info().name, "Constant") == 0) {
+            const auto& constant= dynamic_cast<ngraph::opset3::Constant*>(el.get());
+            const auto& subConstant = std::make_shared<ngraph::opset3::Constant>(constant->get_element_type(), constant->get_shape(), constant->get_value_strings());
             subConstant->set_friendly_name(el->get_friendly_name());
             before[el->get_friendly_name()] = subConstant;
             args.push_back(subConstant);
             continue;
         }
-        if(el->is_parameter()) {
+        if(strcmp(op->get_type_info().name, "Parameter") == 0) {
             const auto& stubParameter = std::make_shared<ngraph::opset3::Parameter>(input.get_element_type(), input.get_partial_shape());
             stubParameter->set_friendly_name(el->get_friendly_name());
             parameters.push_back(stubParameter);
@@ -470,28 +304,28 @@ std::shared_ptr<ngraph::Node> make_before_op(std::map<std::string, std::shared_p
     return newOp;
 }
 
-std::shared_ptr<ngraph::Node> createOp(std::map<std::string, std::shared_ptr<ngraph::Node>>& nodes, std::shared_ptr<ngraph::Node>& op, 
+std::shared_ptr<ngraph::Node> createOp(std::map<std::string, std::shared_ptr<ngraph::Node>>& nodes,const std::shared_ptr<ngraph::Node>& op, 
                                         ngraph::ParameterVector& parameters,ngraph::ResultVector& results, std::map<std::string, std::shared_ptr<ngraph::Node>>& before, 
                                         ngraph::ParameterVector& beforeParameters, ngraph::ResultVector& beforeResults, bool addNodeToBefore = false){
      std::shared_ptr<ngraph::Node> newOp(nullptr);
-            if(!(op->is_parameter())) {
+            if(strcmp(op->get_type_info().name, "Parameter") != 0) {
                 ngraph::OutputVector args;
                 for(auto& element : op->input_values()) {
-                    auto&& el = element.get_node_shared_ptr(); 
-                    auto&& name = el->get_friendly_name();
+                    const auto& el = element.get_node_shared_ptr(); 
+                    const auto& name = el->get_friendly_name();
                     auto subNode = nodes.find(name);
                     if(subNode != nodes.end()) {
                         args.push_back(subNode->second);
                         continue;
                     }
-                    auto&& existingParameter = find(parameters, name);
+                    const auto& existingParameter = find(parameters, name);
                     if(existingParameter.get() != nullptr) {
                         args.push_back(existingParameter);
                         continue;
                     }
-                    if(el->is_constant()) {
-                        const auto&& constanta= dynamic_cast<ngraph::opset3::Constant*>(el.get());
-                        const auto& subConstant = std::make_shared<ngraph::opset3::Constant>(constanta->get_element_type(), constanta->get_shape(), constanta->get_value_strings());
+                    if(strcmp(el->get_type_info().name, "Constant") == 0) {
+                        const auto& constant= dynamic_cast<ngraph::opset3::Constant*>(el.get());
+                        const auto& subConstant = std::make_shared<ngraph::opset3::Constant>(constant->get_element_type(), constant->get_shape(), constant->get_value_strings());
                         subConstant->set_friendly_name(el->get_friendly_name());
                         nodes[el->get_friendly_name()] = subConstant;
                         args.push_back(subConstant);
@@ -501,19 +335,18 @@ std::shared_ptr<ngraph::Node> createOp(std::map<std::string, std::shared_ptr<ngr
                     stubParameter->set_friendly_name(name);
                     parameters.push_back(stubParameter);
                     args.push_back(stubParameter);
-                    if(addNodeToBefore && !(el->is_parameter())) {
+                    if(addNodeToBefore && (strcmp(el->get_type_info().name, "Parameter") != 0)) {
                         auto before_node = make_before_op(before, el, beforeParameters);
                         beforeResults.push_back(std::make_shared<ngraph::opset3::Result>(before_node));
                     }
                 }
-                if(op->is_output()) {
-                    auto newRes = std::make_shared<ngraph::opset3::Result>(args[0].get_node_shared_ptr());
+                if(strcmp(op->get_type_info().name, "Result") == 0) {
+                    const auto& newRes = std::make_shared<ngraph::opset3::Result>(args[0].get_node_shared_ptr());
                     newRes->set_friendly_name(op->get_friendly_name());
                     results.push_back(newRes);
                 } else {
                     newOp = op->clone_with_new_inputs(args);
                     newOp->set_friendly_name(op->get_friendly_name());
-                    if(!newOp->is_parameter())
                     nodes[op->get_friendly_name()] = newOp;
                 }
             }
@@ -528,31 +361,57 @@ std::shared_ptr<ngraph::Node> createOp(std::map<std::string, std::shared_ptr<ngr
 
 
 
+void loadBinaryTensorf32(const std::string &binaryFileName, InferenceEngine::Blob::Ptr& blob) {
+    InferenceEngine::TensorDesc tensDesc = blob->getTensorDesc();
+    if (tensDesc.getPrecision() != InferenceEngine::Precision::FP16) {
+        throw std::invalid_argument("Input must have FP16 precision");
+    }
+
+    std::ifstream binaryFile(binaryFileName, std::ios_base::binary | std::ios_base::ate);
+    if (!binaryFile) {
+        throw std::invalid_argument("Can not open \"" + binaryFileName + "\"");
+    }
+
+    auto fileSize = static_cast<std::size_t>(binaryFile.tellg());
+    binaryFile.seekg(0, std::ios_base::beg);
+    if (!binaryFile.good()) {
+        throw std::invalid_argument("Can not read \"" + binaryFileName + "\"");
+    }
+    /* try to read 32 bits data */
+    std::int16_t *blobDataPtr = std::dynamic_pointer_cast<InferenceEngine::TBlob<std::int16_t>>(blob)->data();
+    for (std::size_t i = 0; i < blob->size(); i++) {
+        float tmp = 0.f;
+        binaryFile.read(reinterpret_cast<char *>(&tmp), sizeof(float));
+        blobDataPtr[i] = InferenceEngine::PrecisionUtils::f32tof16(tmp);
+    }
+}
+
+bool compare(const std::vector<uint8_t>& ref, InferenceEngine::Blob::Ptr res) {
+    auto refFloat = reinterpret_cast<const float*>(ref.data());
+    short* blobDataPtr = std::dynamic_pointer_cast<InferenceEngine::TBlob<short>>(res)->data();
+    for(auto i = 0; i < (ref.size()/sizeof(float)); ++i) {
+        if(blobDataPtr[i] != InferenceEngine::PrecisionUtils::f32tof16(refFloat[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
 int main(int argc, char* argv[]) {
     FilePath file(argc, argv);
     std::set<std::string> names; //set of subgraphs nodes names
     readNames(names, file.namePath);
-    #if DEBUG == 2
-    for(auto name: names) {
-        std::cout << name<<'\n';
-    }
-    std::cout << "___________________________";
-    #endif
     InferenceEngine::CNNNetwork network;
-    if (file.weightsPath != "NONE") {
-        network = InferenceEngine::Core().ReadNetwork(file.IRpath, file.weightsPath);
-    }
-    else {
-        network = InferenceEngine::Core().ReadNetwork(file.IRpath);
-    }
+    network = InferenceEngine::Core().ReadNetwork(file.IRpath, file.weightsPath);
     InferenceEngine::ICNNNetwork::Ptr ptr = static_cast<InferenceEngine::ICNNNetwork::Ptr>(network);
     auto ngraphNetwork = dynamic_cast<InferenceEngine::details::CNNNetworkNGraphImpl*>(ptr.get()); 
     if (ngraphNetwork == nullptr) {
         std::cout << "failed to read network" << std::endl;
         return 1;
     }
-    auto nGraphFunc = ngraphNetwork->getFunction();
-    auto ops = nGraphFunc->get_ordered_ops();
+    const auto& nGraphFunc = ngraphNetwork->getFunction();
+    const auto& ops = nGraphFunc->get_ordered_ops();
     ngraph::ResultVector subgraphResults;
     ngraph::ResultVector beforeResults;
     std::map<std::string, std::shared_ptr<ngraph::Node>> subgraphNodes;
@@ -560,15 +419,13 @@ int main(int argc, char* argv[]) {
     ngraph::ParameterVector beforeParameters;
     ngraph::ParameterVector subgraphParameters;
     std::set<std::string> out = names;
-    bool subgraphNotStarted = true;
-    for (auto op : ops) {                                  
+    for (auto& op : ops) {                                  
         if(out.erase(op->get_friendly_name()) > 0) {  //creates an operation that's clone of op if ops name was in out(copy of names)
-            subgraphNotStarted = false;
             auto subOp = createOp(subgraphNodes, op, subgraphParameters, subgraphResults, beforeNodes, beforeParameters, beforeResults, true);
             for(size_t i = 0; i < op->get_output_size();++i) {
-                auto set = op->get_output_target_inputs(i); 
+                const auto& set = op->get_output_target_inputs(i); 
                 for (auto sel : set) {
-                    auto&& el = sel.get_node();
+                    auto el = sel.get_node();
                     if(out.find(el->get_friendly_name()) == out.end()) {
                         auto res = std::make_shared<ngraph::opset3::Result>(subOp);
                         subgraphResults.push_back(res);
@@ -576,9 +433,6 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
-        }
-        if(subgraphNotStarted) {
-            createOp(beforeNodes, op, beforeParameters,beforeResults, beforeNodes, beforeParameters, beforeResults);
         }
         if (out.empty()) {
            break;
@@ -595,31 +449,11 @@ int main(int argc, char* argv[]) {
     const auto&  subgraphFunc =  std::make_shared<ngraph::Function>(subgraphResults, subgraphParameters, "Subgraph"); 
     const auto&  beforeFunc =  std::make_shared<ngraph::Function>(beforeResults, beforeParameters, "Beforegraph"); 
     std::cout<<"Subgrap created\n"<<std::endl;
-    #if DEBUG == 3
-    std::cout<<"\n______subgraph______________\n";
-    auto s = subgraphFunc->get_ordered_ops();
-    for(auto op : s) {
-        std::cout<<op->get_friendly_name()<<'\n';
-    }
-    std::cout<<"\n______Beforegraph______________\n";
-    auto bops = beforeFunc->get_ordered_ops();
-    for(auto op : bops) {
-        std::cout<<op->get_friendly_name()<<'\n';
-    }
-    #endif
     std::string connection = connectionCheck(subgraphFunc, names); //checks connection
     if(!(connection == "")) {
         std::cout << "Graph isn't complete: " + connection + " dosen't connect to some nodes\n";
         return 0;
     }
-    if(file.forVisualPath.size()) {
-        std::vector<std::shared_ptr<ngraph::Function> > g{subgraphFunc};
-        ngraph::pass::VisualizeTree(file.forVisualPath+ "_subgraph.svg").run_on_module(g);
-        std::vector<std::shared_ptr<ngraph::Function> > g2{beforeFunc};
-        ngraph::pass::VisualizeTree(file.forVisualPath+ "_beforegraph.svg").run_on_module(g2);
-    }
-
-    #if MAKE_INPUTS == 1
     if(file.inputPath.size()) {
        //____calculatin beforegraph______
         ngraph::pass::ConvertPrecision<ngraph::element::Type_t::f16, ngraph::element::Type_t::f32>().run_on_function(beforeFunc);
@@ -635,7 +469,7 @@ int main(int argc, char* argv[]) {
         std::map<std::string, std::string> fileNames;
         size_t last = 0;
         for (auto param : subgraphParameters) {
-            auto&& name = param->get_friendly_name();
+            const auto& name = param->get_friendly_name();
             auto i = findIndex(beforeResults, param->get_friendly_name());
             if( i != beforeResults.size()) {
                 beforeOutputs.push_back(unBeforeOutputs[i]);
@@ -671,7 +505,7 @@ int main(int argc, char* argv[]) {
             InferenceEngine::Core core;
             auto netInputs = subNetwork.getInputsInfo();
             for (auto &input : netInputs) {
-                const auto inputPrecision = input.second->getPrecision();
+                const auto& inputPrecision = input.second->getPrecision();
                 if (inputPrecision == InferenceEngine::Precision::FP32 ||
                     inputPrecision == InferenceEngine::Precision::U8) {
                     input.second->setPrecision(InferenceEngine::Precision::FP16);
@@ -689,17 +523,24 @@ int main(int argc, char* argv[]) {
             for(auto input : netInputs) {
                 auto& name = input.first;
                 auto inputBlob = netRequest.GetBlob(name);
-                if(!loadBinaryTensor(fileNames[name], inputBlob)) {
-                    return 1;
-                }
+                loadBinaryTensorf32(fileNames[name], inputBlob) ;
             }
             netRequest.Infer();
             std::cout << "subgraph calculated\n";
+            ngraph::pass::ConvertPrecision<ngraph::element::Type_t::f16, ngraph::element::Type_t::f32>().run_on_function(subgraphFunc);
+            subgraphFunc->validate_nodes_and_infer_types();
+            auto ref = ngraph::helpers::interpreterFunction(subgraphFunc, beforeOutputs);
+            std::cout<<"comparing results: \n";
+            for(size_t i =0; i < ref.size();++i) {
+                const auto& name = subgraphResults[i]->get_input_node_shared_ptr(0)->get_friendly_name();
+                if(compare(ref[i], netRequest.GetBlob(name))) {
+                    std::cout<<"\t"<<name<<" fine\n";
+                } else {
+                    std::cout<<"\t"<<name<<" aren't the same\n";
+                }
+            }
         }
-
-    
     }
-    #endif
     return 0;
    
 }
