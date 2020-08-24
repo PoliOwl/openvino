@@ -15,7 +15,7 @@
 #
 
 function(add_graph_editor_target TARGET_NAME)
-    file(GLOB SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+    file(GLOB SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../common/*.cpp)
 
     add_executable(${TARGET_NAME} ${SOURCES})
 
@@ -36,7 +36,8 @@ function(add_graph_editor_target TARGET_NAME)
             "${IE_MAIN_SOURCE_DIR}/tests/ngraph_functions/include"
             "${IE_MAIN_SOURCE_DIR}/samples/common/samples"
             "${IE_MAIN_SOURCE_DIR}/samples/common/format_reader"
-            "${IE_MAIN_SOURCE_DIR}/tests/ie_test_utils")
+            "${IE_MAIN_SOURCE_DIR}/tests/ie_test_utils"
+            "${IE_MAIN_SOURCE_DIR}/tools/vpu/common")
 endfunction()
 
 add_graph_editor_target(vpu_graph_editor)
