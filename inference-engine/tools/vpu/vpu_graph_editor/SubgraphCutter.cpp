@@ -210,10 +210,11 @@ short compare(const std::vector<uint8_t>& ref,const InferenceEngine::Blob::Ptr& 
 }
 
 
-SubgraphCutter::SubgraphCutter(const std::string& modelPath,const std::string& binPath,const std::set<std::string>& names = std::set<std::string>()) : _originNet(InferenceEngine::Core().ReadNetwork(modelPath, binPath)) {
+SubgraphCutter::SubgraphCutter(const std::string& modelPath,const std::string& binPath,const std::set<std::string>& names = std::set<std::string>(), const std::string subName = "subgraph")  {
+     _originNet = InferenceEngine::Core().ReadNetwork(modelPath, binPath);
     //c_originNet = InferenceEngine::Core().ReadNetwork(modelPath, binPath);
     if (names.size()) {
-        this->CutSubgraph(names);
+        this->CutSubgraph(names, subName);
     }
 }
 
@@ -242,7 +243,7 @@ void loadBinaryTensorf32(const std::string &binaryFileName, InferenceEngine::Blo
     }
 }
 
-void SubgraphCutter::CutSubgraph(const std::set<std::string>& names) {
+void SubgraphCutter::CutSubgraph(const std::set<std::string>& names, const std::string subName = "subgraph") {
     InferenceEngine::ICNNNetwork::Ptr ptr = static_cast<InferenceEngine::ICNNNetwork::Ptr>(_originNet);
     auto ngraphNetwork = dynamic_cast<InferenceEngine::details::CNNNetworkNGraphImpl*>(ptr.get()); 
     if (ngraphNetwork == nullptr) {
@@ -276,8 +277,8 @@ void SubgraphCutter::CutSubgraph(const std::set<std::string>& names) {
         }
         throw std::invalid_argument(missing +"wasn't fount\n");
     }
-    _subgraphFunc =  std::make_shared<ngraph::Function>(_subgraphResults, _subgraphParameters, "Subgraph"); 
-    _inputGraph =  std::make_shared<ngraph::Function>(_beforeResults, _beforeParameters, "Beforegraph"); 
+    _subgraphFunc =  std::make_shared<ngraph::Function>(_subgraphResults, _subgraphParameters, subName); 
+    _inputGraph =  std::make_shared<ngraph::Function>(_beforeResults, _beforeParameters, "Inputgraph"); 
     std::string connection = connectionCheck(_subgraphFunc, names); //checks connection
     if (!(connection == "")) {
         throw std::invalid_argument("Graph isn't complete: " + connection + " dosen't connect to some nodes\n");
@@ -371,6 +372,12 @@ std::vector<std::vector<std::uint8_t>> SubgraphCutter::calculateSubgraphFunc(con
 
 }
 
+
+
+void SubgraphCutter::setConfig(const std::map<std::string, std::string>& config) {
+    _config = config;
+}
+
 std::map<std::string, InferenceEngine::Blob::Ptr> SubgraphCutter::calculateSubgraph(std::map<std::string, std::string>& inputPaths) {
     InferenceEngine::CNNNetwork subNetwork(_subgraphFunc);
     InferenceEngine::Core core;
@@ -389,7 +396,7 @@ std::map<std::string, InferenceEngine::Blob::Ptr> SubgraphCutter::calculateSubgr
             output.second->setPrecision(InferenceEngine::Precision::FP16);
         }
     }
-    auto exeNet = core.LoadNetwork(subNetwork, _deviceName);
+    auto exeNet = core.LoadNetwork(subNetwork, _deviceName, _config);
     auto netRequest = exeNet.CreateInferRequest();
     for (auto& input : netInputs) {
         auto& name = input.first;

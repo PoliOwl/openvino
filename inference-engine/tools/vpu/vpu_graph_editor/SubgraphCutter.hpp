@@ -26,14 +26,15 @@
 
 class SubgraphCutter {
 public:
-    SubgraphCutter(const std::string& modelPath,const std::string& binPath,const std::set<std::string>& names);
-    void CutSubgraph(const std::set<std::string>& names);
+    SubgraphCutter(const std::string& modelPath,const std::string& binPath,const std::set<std::string>& names, const std::string subName);
+    void CutSubgraph(const std::set<std::string>& names, const std::string subName);
    std::vector<std::vector<std::uint8_t>> getInputs(const std::string& imgPath, const std::string saveName, std::map<std::string, std::string>& inputFileNames);
    std::vector<std::vector<std::uint8_t>> getInputs(const std::string& imgPath);
     std::map<std::string, InferenceEngine::Blob::Ptr> calculateSubgraph(std::map<std::string, std::string>& inputPaths);
     std::vector<std::vector<std::uint8_t>> calculateSubgraphFunc(const std::vector<std::vector<uint8_t>>& inputs);
     std::map<std::string, short> compareResults(std::map<std::string, std::string>& inputPaths, const std::vector<std::vector<uint8_t>>& inputs);
     // void setDeviceName(std::string devName);
+    void setConfig(const std::map<std::string, std::string>& config);
     
 
 protected:
@@ -47,5 +48,6 @@ protected:
     ngraph::ParameterVector _beforeParameters;
     ngraph::ParameterVector _subgraphParameters;
     std::string _deviceName = "MYRIAD";
+    std::map<std::string, std::string> _config;
 
 };
