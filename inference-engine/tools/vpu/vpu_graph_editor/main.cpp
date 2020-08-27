@@ -19,9 +19,11 @@ std::string inputFileName = "Result";
 std::string deviceName =  "MYRIAD";
 std::string subgraphName = "subgraph";
 std::string configPath;
+std::string savePath = "";
 std::string helpMessage = 
 "Help message: \n\tUsage: vpu_graph_editor <model IR path> [<weights path>] <txt file with nodes name path> [<switch> ...]\n\timage MUST be bmp 24bpp\n\tswitch\t\t\t short\t meaning\n\t-input <file path>\t-i\tpath to inout file\n\t-file <name>\t\t-f\tsave files first name(ex: name for inp1 is first name + inp1(firstNameinp1.bin))\n\t-calculate\t\t-c\tadd to calculate subgraph and compare results\n\t-name <name>\t\t-n\tsubgraph name\n\t-config <filePath>\t-con\tpath to file with config values\nin a subgraph names file each name should be on a different line\n";
 bool calcNet = false;
+bool save = false;
 //void defult{};
 
 //gets values from command line 
@@ -86,6 +88,13 @@ FilePath(int argc, char* argv[]) {
             }
             if (operation == "-con" || operation == "-config") {
                 configPath = argv[++i];
+                continue;
+            }
+            if (operation == "-s" || operation == "-save") {
+                save = true;
+                if((i+1 < argc)&&(argv[i+1][0]!= '-')) {
+                    savePath = argv[++i];
+                }
                 continue;
             }
             std::cout<<"Unknown operaion " << argv[i]<<std::endl;
@@ -161,6 +170,16 @@ int main(int argc, char* argv[]) {
                 for(auto& res : comparationResults) {
                     std::cout<<"\t"<<res.first<<" max diff: "<<res.second<<"\n";
                 }
+            }
+        }
+        if(file.save) {
+            std::string xmlPath = file.savePath + file.subgraphName + ".xml";
+            std::string binPath = file.savePath + file.subgraphName + ".bin";
+            InferenceEngine::ResponseDesc* resp = new InferenceEngine::ResponseDesc();
+            if(subCut.save(xmlPath, binPath, resp) != InferenceEngine::OK) {
+                std::cout << "error while saving\n";
+                std::cerr << resp->msg<<"\n";
+                return 1;
             }
         }
         return 0;

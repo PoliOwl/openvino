@@ -421,3 +421,8 @@ std::map<std::string, short> SubgraphCutter::compareResults(std::map<std::string
     }
     return ans;
 }
+
+InferenceEngine::StatusCode SubgraphCutter::save(const std::string& xmlPath,const std::string& binPath, InferenceEngine::ResponseDesc* resp) {
+    InferenceEngine::details::CNNNetworkNGraphImpl subNetwork(_subgraphFunc);
+    return subNetwork.serialize(xmlPath, binPath, resp);
+}

@@ -35,6 +35,7 @@ public:
     std::map<std::string, short> compareResults(std::map<std::string, std::string>& inputPaths, const std::vector<std::vector<uint8_t>>& inputs);
     // void setDeviceName(std::string devName);
     void setConfig(const std::map<std::string, std::string>& config);
+    InferenceEngine::StatusCode save(const std::string& xmlPath,const std::string& binPath, InferenceEngine::ResponseDesc* resp);
     
 
 protected:
