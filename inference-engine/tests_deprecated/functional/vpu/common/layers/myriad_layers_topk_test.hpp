@@ -77,31 +77,45 @@ protected:
         }
 
         StatusCode st = OK;
+        int count_assert = 0;
 
         ASSERT_NO_THROW(st = _vpuPluginPtr->LoadNetwork(_exeNetwork, network, _config, &_resp));
+        printf("%d\n", ++count_assert);
         ASSERT_EQ(StatusCode::OK, st) << _resp.msg;
+        printf("%d\n", ++count_assert);
         ASSERT_NE(_exeNetwork, nullptr) << _resp.msg;
+        printf("%d\n", ++count_assert);
 
         ASSERT_NO_THROW(st = _exeNetwork->CreateInferRequest(_inferRequest, &_resp));
+        printf("%d\n", ++count_assert);
         ASSERT_EQ(StatusCode::OK, st) << _resp.msg;
+        printf("%d\n", ++count_assert);
 
         Blob::Ptr inputValuesBlob;
         ASSERT_NO_THROW(st = _inferRequest->GetBlob("topk_input", inputValuesBlob, &_resp));
+        printf("%d\n", ++count_assert);
         ASSERT_EQ(StatusCode::OK, st) << _resp.msg;
+        printf("%d\n", ++count_assert);
 
         GenRandomData(inputValuesBlob);
 
         ASSERT_NO_THROW(st = _inferRequest->Infer(&_resp));
+        printf("%d\n", ++count_assert);
         ASSERT_EQ(StatusCode::OK, st) << _resp.msg;
+        printf("%d\n", ++count_assert);
 
         Blob::Ptr outputValuesBlob, outputIndicesBlob;
         if (outputValues) {
             ASSERT_NO_THROW(st = _inferRequest->GetBlob("topk.0", outputValuesBlob, &_resp));
+            printf("%d in first\n", ++count_assert);
             ASSERT_EQ(StatusCode::OK, st) << _resp.msg;
+            printf("%d in first\n", ++count_assert);
         }
         if (outputIndices) {
             ASSERT_NO_THROW(st = _inferRequest->GetBlob("topk.1", outputIndicesBlob, &_resp));
+            printf("%d in second\n", ++count_assert);
             ASSERT_EQ(StatusCode::OK, st) << _resp.msg;
+            printf("%d in second\n", ++count_assert);
         }
 
         const InferenceEngine::TensorDesc valuesDesc{dataPrecision, outputDims, defaultLayout(outputDims.size())};
